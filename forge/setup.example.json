@@ -1,0 +1,25 @@
+{
+  "_comment": "Copy to forge/setup.local.json (gitignored). No keys here and no model ids: model ids live in forge/models.local.json, API keys ONLY inside TrueForge.",
+  "baseUrl": "http://localhost:8790",
+  "agents": {
+    "primary": "forge-primary",
+    "fallback": "forge-fallback"
+  },
+  "mcp": {
+    "name": "forge-editor",
+    "perWorkspace": false,
+    "port": 8792,
+    "path": "/mcp"
+  },
+  "budgets": {
+    "seedTokens": 3000,
+    "mentionsTokens": 6000,
+    "runToolBudgetTokens": 30000,
+    "maxToolCalls": 40,
+    "maxRunSeconds": 300
+  },
+  "retry": {
+    "max": 3,
+    "baseDelayMs": 1000
+  }
+}

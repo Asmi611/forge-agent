@@ -1,0 +1,30 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+      - run: npm run check
+      - name: forbidden patterns
+        run: |
+          # NOTE: under `bash -e` a failing `! cmd` does NOT stop the script (negated commands are exempt),
+          # so every check records its own failure and the step exits non-zero at the end.
+          fail=0
+          # grep exits 2 (and `!` would turn that into a pass) if a directory is missing, so require them
+          for d in src/engine src/mcp src/ui media; do [ -d "$d" ] || { echo "missing dir $d"; fail=1; }; done
+          # \bapplyEdit\b matches vscode.workspace.applyEdit but NOT the pure helper applyEdits()
+          ! grep -rEn "writeFile|appendFile|createWriteStream|\bapplyEdit\b|rmSync|unlinkSync" src/engine src/mcp || fail=1
+          ! grep -rEn "api\.openai\.com|api\.anthropic\.com|generativelanguage\.googleapis" src || fail=1
+          ! grep -rEn "shell: *true" src || fail=1
+          ! grep -rn "tool_approval_policy" src || fail=1
+          ! grep -rn "innerHTML" media src/ui || fail=1
+          ! git grep -nEI "sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}" -- . ':!docs' || fail=1
+          exit $fail
+
+      - name: CODEOWNERS placeholders (warning only)
+        run: |
+          grep -q "_GITHUB" .github/CODEOWNERS && echo "::warning::Replace @DEV1_GITHUB/@DEV2_GITHUB in .github/CODEOWNERS" || true

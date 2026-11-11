@@ -1,0 +1,29 @@
+{
+  "_comment": "EXAMPLE model configuration (required by the organisers). Copy to forge/models.local.json (gitignored). NO API KEYS here or anywhere in this repo: add the provider and its key inside TrueForge (UI -> model providers). This file only records WHICH provider and model id each saved agent uses, so `npm run forge:setup` can create the agents and the write-up can declare them (model, where it ran, approximate cost).",
+  "profiles": {
+    "primary": {
+      "agent": "forge-primary",
+      "provider": "YOUR_PROVIDER_NAME_AS_ADDED_IN_TRUEFORGE",
+      "modelId": "YOUR_PRIMARY_MODEL_ID",
+      "kind": "catalog-provider | openai-compatible-endpoint | local",
+      "modelContextTokens": 128000,
+      "approxCostNote": "fill in for write-up section 5"
+    },
+    "fallback": {
+      "agent": "forge-fallback",
+      "provider": "A_DIFFERENT_PROVIDER_OR_LOCAL_ENDPOINT",
+      "modelId": "YOUR_FALLBACK_MODEL_ID",
+      "kind": "catalog-provider | openai-compatible-endpoint | local",
+      "modelContextTokens": 128000,
+      "approxCostNote": "fill in for write-up section 5"
+    }
+  },
+  "drill": {
+    "local": {
+      "provider": "OPTIONAL_LOCAL_OPENAI_COMPATIBLE_PROVIDER",
+      "modelId": "OPTIONAL_SMALL_MODEL_ID",
+      "modelContextTokens": 8000,
+      "note": "used only for the model-swap drill (docs/05); shrinks the run budget automatically"
+    }
+  }
+}

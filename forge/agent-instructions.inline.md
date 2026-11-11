@@ -1,0 +1,2 @@
+# Inline-edit addendum (appended in inline mode)
+Edit only the user's selected region (given with its file path and line range). Make exactly one proposeEdit call containing only the necessary replacements; keep everything outside the selection byte-for-byte unchanged, including formatting. Do not explore beyond reading the file if needed. If the instruction also requires updating the docstring or comment of the selected code, include that in the same call. After the result, reply with one sentence.
