@@ -10,8 +10,11 @@
   },
   "categories": [
     "Other"
-  ],    "activationEvents": ["onStartupFinished"],
-    "main": "./out/extension.js",
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
@@ -27,7 +30,6 @@
     "lint": "eslint src --ext ts",
     "test": "vitest run",
     "test:smoke": "vitest run --config vitest.smoke.config.ts",
-
     "engine-cli": "ts-node --esm scripts/engine-cli.ts",
     "eval:context": "ts-node --esm scripts/eval-context.ts",
     "forge:setup": "ts-node --esm scripts/forge-setup.ts",
@@ -51,6 +53,8 @@
     "vitest": "^2.1.5"
   },
   "dependencies": {
-    "diff": "^5.1.0"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "diff": "^5.1.0",
+    "zod": "^4.6.7"
   }
 }

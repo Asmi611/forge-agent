@@ -51,13 +51,20 @@ export function startMcpServer() {
       if (parsed) console.log('  [mcp] <-', req.method, parsed.method || '(batch)', parsed.params && parsed.params.name ? `tool=${parsed.params.name}` : '', parsed.params && parsed.params._meta ? `_meta=${JSON.stringify(parsed.params._meta)}` : '');
       const server = build(req);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      res.on('close', () => { transport.close(); server.close(); });
+      res.on('close', () => { transport.close(); try { server.close(); } catch { /* already closed */ } });
       await server.connect(transport);
       await transport.handleRequest(req, res, parsed);
     });
     srv.on('error', reject);
     srv.listen(MCP_PORT, '127.0.0.1', () => { console.log(`  [mcp] listening on http://127.0.0.1:${MCP_PORT}/mcp`); resolve(srv); });
   });
+}
+
+// Graceful teardown: stop accepting, finish in-flight requests, then close.
+export async function closeMcpServer(srv) {
+  srv.close(() => {}); // stop accepting new connections
+  // allow the running transport request to release its handles before we exit
+  await new Promise((resolve) => setTimeout(resolve, 300));
 }
 
 // Run standalone: node scripts/spike/mcp-server.mjs
