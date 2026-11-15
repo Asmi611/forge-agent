@@ -16,10 +16,64 @@
     "commands": [
       {
         "command": "forge.showDemoDiff",
-        "title": "Forge: Show Demo Diff (mock)",
+        "title": "Show Demo Diff (mock)",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.acceptHunk",
+        "title": "Accept change",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.rejectHunk",
+        "title": "Reject change",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.acceptHunkAtCursor",
+        "title": "Accept Change Under Cursor",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.rejectHunkAtCursor",
+        "title": "Reject Change Under Cursor",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.acceptAllHunks",
+        "title": "Accept All Changes in This Diff",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.rejectAllHunks",
+        "title": "Reject All Changes in This Diff",
         "category": "Forge"
       }
-    ]
+    ],
+    "menus": {
+      "comments/comment/title": [
+        {
+          "command": "forge.acceptHunk",
+          "group": "inline@1",
+          "when": "commentController == forge-review"
+        },
+        {
+          "command": "forge.rejectHunk",
+          "group": "inline@2",
+          "when": "commentController == forge-review"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "forge.acceptHunk",
+          "when": "false"
+        },
+        {
+          "command": "forge.rejectHunk",
+          "when": "false"
+        }
+      ]
+    }
   },
   "scripts": {
     "check": "npm run typecheck && npm run lint && npm run test && npm run forbidden",

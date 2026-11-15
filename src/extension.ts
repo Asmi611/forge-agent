@@ -1,35 +1,30 @@
 /**
  * Forge Agent extension entry point (Dev 2-owned wiring surface).
  *
- * S-01 bootstrap: registers the "Forge: Show Demo Diff (mock)" command.
- * Real agent/UI features are Dev-2 work and are NOT implemented here.
+ * Registers the review UI (DiffReviewer + its commands) and the
+ * "Forge: Show Demo Diff (mock)" command. With a DiffReviewer the demo opens as a real
+ * per-hunk review (Accept / Reject each change). Without one (the S-01 smoke test calls
+ * registerDemoDiffCommand(context) with a single argument) it behaves exactly as in S-01:
+ * a plain read-only vscode.diff of two in-memory documents.
  *
  * No workspace writes, no model-provider calls, no shell strings.
  */
-
 import * as vscode from 'vscode';
+import { DiffReviewer } from './review/DiffReviewer';
+import { proposalFromFixture, type DemoFixture } from './review/demoProposal';
+import { registerReviewCommands } from './review/reviewCommands';
 
-/**
- * Forge: Show Demo Diff (mock)
- *
- * Opens a genuine VS Code diff of two in-memory text documents for the
- * demo fixture. No temporary files, no workspace writes.
- *
- * Workflow:
- *  1. Require an open workspace folder.
- *  2. Resolve fixtures/demo-proposal.json relative to the workspace URI.
- *  3. Read + validate the fixture (originalContent / proposedContent).
- *  4. Open two in-memory TextDocuments via vscode.workspace.openTextDocument.
- *  5. Show the original, then vscode.diff(originalUri, modifiedUri, title).
- */
 export function activate(context: vscode.ExtensionContext): void {
-  registerDemoDiffCommand(context);
+  const reviewer = new DiffReviewer();
+  context.subscriptions.push(reviewer);
+  registerReviewCommands(context, reviewer);
+  registerDemoDiffCommand(context, reviewer);
 }
 
 export function deactivate(): void {
 }
 
-export function registerDemoDiffCommand(context: vscode.ExtensionContext): void {
+export function registerDemoDiffCommand(context: vscode.ExtensionContext, reviewer?: DiffReviewer): void {
   const command = vscode.commands.registerCommand('forge.showDemoDiff', async () => {
     // 1) Require an open workspace folder.
     const folder = vscode.workspace.workspaceFolders?.[0];
@@ -50,41 +45,29 @@ export function registerDemoDiffCommand(context: vscode.ExtensionContext): void 
         throw new Error('Invalid demo fixture: originalContent/proposedContent missing');
       }
     } catch (err) {
-      // 3) Graceful failure for missing folder (handled above), missing file,
-      //    malformed JSON, or a missing field.
       const message = err instanceof Error ? err.message : String(err);
       vscode.window.showWarningMessage(`Forge: demo diff unavailable (${message}).`);
       return;
     }
 
-    // 4) Open two in-memory text documents (no temp files written).
-    const originalDocument = await openTextDocumentWithContent(parsed.originalContent, 'typescript');
-    const proposedDocument = await openTextDocumentWithContent(parsed.proposedContent, 'typescript');
+    // 3a) With a reviewer: a real per-hunk review (adding again resets every hunk to "pending").
+    if (reviewer) {
+      try {
+        const proposal = proposalFromFixture(parsed);
+        reviewer.add(proposal);
+        await reviewer.open(proposal.id);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        vscode.window.showWarningMessage(`Forge: demo diff unavailable (${message}).`);
+      }
+      return;
+    }
 
-    // 5) Open the in-editor diff. vscode.diff opens both documents and
-    //    does not require either to be shown first, so no separate
-    //    showTextDocument call is needed here. Await so execution is
-    //    synchronous with the async command registration and we surface
-    //    any command execution failure instead of silently ignoring it.
+    // 3b) No reviewer: the plain S-01 diff of two in-memory documents (no files written).
+    const originalDocument = await vscode.workspace.openTextDocument({ content: parsed.originalContent, language: 'typescript' });
+    const proposedDocument = await vscode.workspace.openTextDocument({ content: parsed.proposedContent, language: 'typescript' });
     await vscode.commands.executeCommand('vscode.diff', originalDocument.uri, proposedDocument.uri, 'Forge: Demo Diff (mock)');
   });
 
   context.subscriptions.push(command);
-}
-
-/**
- * Open an in-memory text document with the given content and language.
- * Uses the single options overload, so no disk URI or file is involved.
- */
-function openTextDocumentWithContent(content: string, language: string): Thenable<vscode.TextDocument> {
-  return vscode.workspace.openTextDocument({ content, language });
-}
-
-/**
- * Shape of the demo fixture. Mirrors the FileProposal contract fields.
- */
-interface DemoFixture {
-  originalContent: string;
-  proposedContent: string;
-  hunks: { oldText: string; newText: string }[];
 }
