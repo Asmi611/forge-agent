@@ -1,23 +1,39 @@
 /**
  * Forge Agent extension entry point (Dev 2-owned wiring surface).
  *
- * Registers the review UI (DiffReviewer + its commands) and the
- * "Forge: Show Demo Diff (mock)" command. With a DiffReviewer the demo opens as a real
- * per-hunk review (Accept / Reject each change). Without one (the S-01 smoke test calls
- * registerDemoDiffCommand(context) with a single argument) it behaves exactly as in S-01:
- * a plain read-only vscode.diff of two in-memory documents.
- *
- * No workspace writes, no model-provider calls, no shell strings.
+ * Registers the review UI (DiffReviewer, ApplyManager, UndoManager, ReviewStatusBar)
+ * and the "Forge: Show Demo Diff (mock)" command.
  */
 import * as vscode from 'vscode';
+import { ApplyManager, VscodeWorkspaceOps } from './review/ApplyManager';
 import { DiffReviewer } from './review/DiffReviewer';
+import { ReviewStatusBar } from './review/ReviewStatusBar';
+import { UndoManager } from './review/UndoManager';
+import { registerApplyCommands } from './review/applyCommands';
 import { proposalFromFixture, type DemoFixture } from './review/demoProposal';
 import { registerReviewCommands } from './review/reviewCommands';
 
 export function activate(context: vscode.ExtensionContext): void {
   const reviewer = new DiffReviewer();
   context.subscriptions.push(reviewer);
+
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  let apply: ApplyManager | undefined;
+  let undo: UndoManager | undefined;
+
+  if (folder) {
+    const storageUri = context.storageUri ?? context.globalStorageUri;
+    const ops = new VscodeWorkspaceOps(folder.uri, storageUri);
+    undo = new UndoManager(ops);
+    apply = new ApplyManager(ops, undo);
+    context.subscriptions.push(undo, apply);
+  }
+
+  const statusBar = new ReviewStatusBar(reviewer, undo);
+  context.subscriptions.push(statusBar);
+
   registerReviewCommands(context, reviewer);
+  registerApplyCommands(context, reviewer, apply, undo);
   registerDemoDiffCommand(context, reviewer);
 }
 

@@ -10,8 +10,9 @@
   },
   "categories": [
     "Other"
-  ],    "activationEvents": ["onStartupFinished"],
-    "main": "./out/extension.js",
+  ],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
@@ -47,6 +48,16 @@
       {
         "command": "forge.rejectAllHunks",
         "title": "Reject All Changes in This Diff",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.applyAccepted",
+        "title": "Apply Accepted Changes",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.undoLastApply",
+        "title": "Undo Last Apply",
         "category": "Forge"
       }
     ],
