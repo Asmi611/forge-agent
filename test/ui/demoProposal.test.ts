@@ -2,6 +2,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 import { proposalFromFixture, type DemoFixture } from '../../src/review/demoProposal';
+import { hashText } from '../../src/review/applyCore';
 import { buildText } from '../../src/review/hunkText';
 import { groupOf, sortForReview } from '../../src/review/proposalOrder';
 
@@ -24,6 +25,9 @@ describe('proposalFromFixture (real demo fixture)', () => {
     const text = buildText(p, 'final').text;
     expect(text).toContain('// Verify the feature by running its tests.');
     expect(text).not.toContain('Decrement</button>');
+  });
+  it('the base hash does not depend on line endings (Windows files are CRLF)', () => {
+    expect(base.base.contentHash).toBe(hashText(fixture.originalContent.replace(/\n/g, '\r\n')));
   });
   it('refuses an oldText that does not match exactly once', () => {
     expect(() => proposalFromFixture({ ...fixture, hunks: [{ oldText: 'nope', newText: 'x' }] })).toThrow();
