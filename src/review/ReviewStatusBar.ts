@@ -5,6 +5,7 @@
  * They answer the two questions a new user has: "is it saved yet?" and "can I take it back?".
  */
 import * as vscode from 'vscode';
+import { countHunks, statusBarText } from './applyMessages';
 import type { DiffReviewer } from './DiffReviewer';
 import type { UndoManager } from './UndoManager';
 
@@ -33,12 +34,9 @@ export class ReviewStatusBar implements vscode.Disposable {
     if (proposals.length === 0) {
       this.applyItem.hide();
     } else {
-      const total = proposals.reduce((n, p) => n + p.hunks.length, 0);
-      const accepted = proposals.reduce((n, p) => n + p.hunks.filter((h) => h.status === 'accepted').length, 0);
-      this.applyItem.text = `$(check-all) Apply ${accepted} of ${total} change${total === 1 ? '' : 's'}`;
-      this.applyItem.tooltip = accepted === 0
-        ? 'Nothing is saved yet. Accept the changes you want in the diff, then click here to save them.'
-        : 'Click to save the accepted changes to your files. Rejected and undecided changes are not saved.';
+      const label = statusBarText(countHunks(proposals));
+      this.applyItem.text = label.text;
+      this.applyItem.tooltip = label.tooltip;
       this.applyItem.show();
     }
     if (this.undo?.canUndo) this.undoItem.show();

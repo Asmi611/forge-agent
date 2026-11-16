@@ -6,8 +6,8 @@
  * file (it must match exactly once, on whole lines), sort the hunks by position and
  * compute newStart as oldStart + running delta. Pure code: no VS Code, no disk writes.
  */
-import { createHash } from 'crypto';
 import type { FileProposal, Hunk, HunkStatus } from '../types/contract';
+import { hashText } from './applyCore';
 
 export interface DemoFixture {
   originalContent: string;
@@ -58,7 +58,7 @@ export function proposalFromFixture(fx: DemoFixture, path = 'src/Counter.tsx'): 
     callIds,
     path,
     isNewFile: false,
-    base: { contentHash: createHash('sha256').update(original).digest('hex'), version: null, wasDirty: false },
+    base: { contentHash: hashText(original), version: null, wasDirty: false },
     originalContent: original,
     proposedContent: fx.proposedContent,
     hunks,

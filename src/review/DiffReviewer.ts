@@ -89,19 +89,19 @@ export class DiffReviewer implements vscode.Disposable, vscode.TextDocumentConte
     this.proposalsChanged.fire();
   }
 
-  remove(proposalId: string): void {
-    const p = this.proposals.get(proposalId);
-    if (!p) return;
-    this.closeTabs(proposalId);
+  /** Removes a proposal, its comment boxes and its diff tab. Resolves once the tab is closed. */
+  async remove(proposalId: string): Promise<void> {
+    if (!this.proposals.has(proposalId)) return;
     this.dropThreads(proposalId);
     this.proposals.delete(proposalId);
     this.order = this.order.filter((id) => id !== proposalId);
     if (this.currentId === proposalId) this.currentId = undefined;
     this.proposalsChanged.fire();
+    await this.closeTabs(proposalId);
   }
 
-  clear(): void {
-    for (const id of [...this.proposals.keys()]) this.remove(id);
+  async clear(): Promise<void> {
+    for (const id of [...this.proposals.keys()]) await this.remove(id);
   }
 
   get(proposalId: string): FileProposal | undefined {
@@ -193,8 +193,9 @@ export class DiffReviewer implements vscode.Disposable, vscode.TextDocumentConte
   private commentFor(p: FileProposal, hunkIndex: number): HunkComment {
     const h = p.hunks[hunkIndex];
     if (!h) throw new RangeError('no such hunk');
-    const what = h.oldLines === 0 ? `adds ${h.newLines} line(s)` : h.newLines === 0 ? `removes ${h.oldLines} line(s)` : `changes ${h.oldLines} line(s) into ${h.newLines}`;
-    const label = h.status === 'accepted' ? '✓ Accepted' : h.status === 'rejected' ? '✗ Rejected' : 'Pending';
+    const plural = (n: number): string => `${n} line${n === 1 ? '' : 's'}`;
+    const what = h.oldLines === 0 ? `Adds ${plural(h.newLines)}` : h.newLines === 0 ? `Removes ${plural(h.oldLines)}` : `Replaces ${plural(h.oldLines)} with ${h.newLines}`;
+    const label = h.status === 'accepted' ? '✓ Accepted: saved when you Apply' : h.status === 'rejected' ? '✗ Rejected: will not be saved' : 'Undecided';
     return new HunkComment(`Change ${hunkIndex + 1} of ${p.hunks.length}: ${what}.`, label, `${HUNK_PREFIX}${encodeURIComponent(p.id)}:${h.id}`);
   }
 
@@ -232,14 +233,14 @@ export class DiffReviewer implements vscode.Disposable, vscode.TextDocumentConte
     this.proposalsChanged.fire();
   }
 
-  private closeTabs(proposalId: string): void {
+  private async closeTabs(proposalId: string): Promise<void> {
+    const tabs: vscode.Tab[] = [];
     for (const group of vscode.window.tabGroups.all) {
       for (const tab of group.tabs) {
         const input = tab.input;
-        if (input instanceof vscode.TabInputTextDiff && input.modified.scheme === PROPOSED_SCHEME && input.modified.query === proposalId) {
-          void vscode.window.tabGroups.close(tab);
-        }
+        if (input instanceof vscode.TabInputTextDiff && input.modified.scheme === PROPOSED_SCHEME && input.modified.query === proposalId) tabs.push(tab);
       }
     }
+    if (tabs.length > 0) await vscode.window.tabGroups.close(tabs);
   }
 }

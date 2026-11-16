@@ -8,6 +8,8 @@ import { undoRecord, type ApplyRecord, type UndoResult, type WorkspaceOps } from
 
 const MAX_RECORDS = 20;
 
+export type UndoOutcome = UndoResult & { applyId: string };
+
 export class UndoManager implements vscode.Disposable {
   private readonly stack: ApplyRecord[] = [];
   private readonly changed = new vscode.EventEmitter<void>();
@@ -25,7 +27,7 @@ export class UndoManager implements vscode.Disposable {
     this.changed.fire();
   }
 
-  async undoLast(): Promise<UndoResult | undefined> {
+  async undoLast(): Promise<UndoOutcome | undefined> {
     const record = this.stack[this.stack.length - 1];
     if (!record) return undefined;
     const result = await undoRecord(this.ops, record, async (paths) => {
@@ -43,7 +45,7 @@ export class UndoManager implements vscode.Disposable {
     } else if (!result.cancelled) {
       void vscode.window.showErrorMessage(`Forge: ${result.message}`);
     }
-    return result;
+    return { ...result, applyId: record.applyId };
   }
 
   dispose(): void {

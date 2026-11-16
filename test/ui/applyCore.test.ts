@@ -255,6 +255,37 @@ describe('undoRecord', () => {
   });
 });
 
+describe('line endings and the content hash (Windows CRLF files)', () => {
+  it('the hash ignores CRLF vs LF', () => {
+    expect(hashText('a\r\nb\r\n')).toBe(hashText('a\nb\n'));
+    expect(hashText('a\nb\n')).not.toBe(hashText('a\nB\n'));
+  });
+
+  it('a CRLF file on disk is NOT stale when the proposal was made from the same text with LF endings', async () => {
+    const crlf = ORIG.replace(/\n/g, '\r\n');
+    const ops = new FakeOps({ 'src/a.txt': crlf });
+    const out = await applyProposals(ops, [twoHunks('accepted', 'rejected')], 'a1'); // hash comes from the LF text
+    expect(out.results[0]?.failure).toBeUndefined();
+    expect(out.results[0]?.applied).toBe(true);
+  });
+
+  it('undo still recognises the file as unedited after a CRLF apply', async () => {
+    const crlf = ORIG.replace(/\n/g, '\r\n');
+    const ops = new FakeOps({ 'src/a.txt': crlf });
+    const out = await applyProposals(ops, [twoHunks('accepted', 'accepted')], 'a1');
+    let asked = false;
+    const undo = await undoRecord(ops, out.record!, async () => { asked = true; return true; });
+    expect(asked).toBe(false);
+    expect(undo.ok).toBe(true);
+  });
+
+  it('a real edit is still detected as stale on a CRLF file', async () => {
+    const crlf = (ORIG + 'user typed this\n').replace(/\n/g, '\r\n');
+    const out = await applyProposals(new FakeOps({ 'src/a.txt': crlf }), [twoHunks('accepted', 'accepted')], 'a1');
+    expect(out.results[0]?.failure?.kind).toBe('stale');
+  });
+});
+
 describe('messages and ReviewResult shape', () => {
   it('plain-language summaries', async () => {
     const ops = new FakeOps({ 'src/a.txt': ORIG });

@@ -61,11 +61,17 @@ export interface ProposalOutcome {
 export interface ApplyOutcome { applyId: string; results: ProposalOutcome[]; record?: ApplyRecord }
 
 // ───────── small pure helpers ─────────
-export function hashText(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
-}
 export function normalizeEol(text: string): string {
   return text.replace(/\r\n/g, '\n');
+}
+/**
+ * THE content hash of the whole project (proposal.base.contentHash, DocSnapshot.contentHash,
+ * undo records). Line endings are normalised first, because VS Code keeps one line-ending
+ * style per open file and a Windows file may be CRLF while a proposal was built from LF text.
+ * Always use this function; never hash a file's text any other way.
+ */
+export function hashText(text: string): string {
+  return createHash('sha256').update(normalizeEol(text)).digest('hex');
 }
 export function sameText(a: string, b: string): boolean {
   return normalizeEol(a) === normalizeEol(b);
