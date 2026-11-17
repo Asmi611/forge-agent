@@ -9,39 +9,50 @@
  * No vscode import; unit-testable in isolation.
  */
 
+import type {
+  UiHost,
+  ContextProvider,
+  CommandRequest,
+  CommandResult,
+  DocSnapshot,
+  LineRange,
+  ResolvedMention,
+  ContextItem,
+} from '../types/contract';
 
-export interface CommandRequest {
-  file: string;
-  args: string[];
-  cwd?: string;
-  timeoutMs: number;
-  maxOutputChars: number;
-}
+export type { CommandRequest, CommandResult, DocSnapshot };
 
-export interface CommandResult {
-  exitCode: number | null;
-  stdout: string;
-  stderr: string;
-  truncated: boolean;
-  timedOut: boolean;
-  killed: boolean;
-}
+/** Minimal ContextProvider stub returning empty results. */
+class MockContextProvider implements ContextProvider {
+  async resolveMention(_raw: string): Promise<ResolvedMention | null> {
+    return null;
+  }
 
-export interface DocSnapshot {
-  path: string;
-  exists: boolean;
-  text: string;
-  version: number | null;
-  isDirty: boolean;
-  contentHash: string;
+  async seed(_prompt: string, _budgetTokens: number): Promise<ContextItem[]> {
+    return [];
+  }
+
+  async search(_q: { query: string; glob?: string; maxResults?: number }): Promise<{ hits: { path: string; line: number; preview: string }[]; omitted: number }> {
+    return { hits: [], omitted: 0 };
+  }
+
+  async findSymbol(_q: { name: string }): Promise<{ symbols: { name: string; path: string; line: number; kind: string }[] }> {
+    return { symbols: [] };
+  }
+
+  async repoMap(_q: { dir?: string; depth?: number }): Promise<{ tree: string; truncated: boolean }> {
+    return { tree: '', truncated: false };
+  }
 }
 
 /** Workspace root. Overridden on construction. */
-export class MockUiHost {
+export class MockUiHost implements UiHost {
   workspaceRoot: string;
+  context: ContextProvider;
 
   constructor(workspaceRoot: string) {
     this.workspaceRoot = workspaceRoot;
+    this.context = new MockContextProvider();
   }
 
   /** Mark a document as open so snapshot() uses its (dirty) text. */
@@ -60,6 +71,7 @@ export class MockUiHost {
 
   private snapshotSync(_unused: string): DocSnapshot {
     // Mock host has no real filesystem; return an empty, nonexist state.
+    // Note: when implementing real snapshot content hash (E-03), normalize CRLF to LF before SHA-256 hashing.
     return {
       path: _unused,
       exists: false,
@@ -70,11 +82,11 @@ export class MockUiHost {
     };
   }
 
-  readFile(path: string, range?: { startLine: number; endLine: number }): Promise<string> {
+  readFile(path: string, range?: LineRange): Promise<string> {
     return Promise.resolve(this.readFileSync(path, range));
   }
 
-  private readFileSync(_path: string, range?: { startLine: number; endLine: number }): string {
+  private readFileSync(_path: string, range?: LineRange): string {
     if (!range) return '';
     const lines: string[] = [];
     for (let i = range.startLine - 1; i < range.endLine && i < 100; i++) {
