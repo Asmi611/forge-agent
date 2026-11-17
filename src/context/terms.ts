@@ -54,6 +54,8 @@ const INTENT_PATTERNS: [Intent, RegExp][] = [
   ['cli', /\b(cli|commands?|terminal|argv|arguments)\b/i],
 ];
 
+const INTENT_FILE_WORDS: Partial<Record<Intent, string[]>> = { cli: ['cli'], config: ['config'] };
+
 /**
  * Analyse a request: lowercase words, identifier parts, no stop words, no words under 3 letters.
  * Quoted text and identifier-like tokens (snake_case, camelCase, name.ext) count double.
@@ -75,6 +77,12 @@ export function analyzeQuery(prompt: string): QueryAnalysis {
 
   const intents = new Set<Intent>();
   for (const [intent, pattern] of INTENT_PATTERNS) if (pattern.test(prompt)) intents.add(intent);
+
+  // A category also brings its usual file-name word: "command line" -> files called cli; "settings" -> files called config.
+  // (By category only, never a project name.)
+  for (const intent of intents) {
+    for (const word of INTENT_FILE_WORDS[intent] ?? []) weights.set(word, Math.max(weights.get(word) ?? 0, 1.5));
+  }
 
   const terms = [...weights.entries()].map(([term, weight]) => ({ term, weight })).sort((a, b) => a.term.localeCompare(b.term));
   return { terms, intents };

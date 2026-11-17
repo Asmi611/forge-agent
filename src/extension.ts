@@ -24,6 +24,8 @@ import { registerEngineCommands } from './ui/engineCommands';
 import { ForgeStatusBar } from './ui/StatusBar';
 import { VscodeSink } from './ui/VscodeSink';
 import type { FileProposal } from './types/contract';
+import { registerContextCommands } from './context/contextCommands';
+import { createWorkspaceContext } from './context/workspaceContext';
 
 export function activate(context: vscode.ExtensionContext): void {
   const reviewer = new DiffReviewer();
@@ -40,6 +42,13 @@ export function activate(context: vscode.ExtensionContext): void {
   if (apply) context.subscriptions.push(apply);
   registerApplyCommands(context, reviewer, apply, undo);
   context.subscriptions.push(new ReviewStatusBar(reviewer, undo));
+
+  // Context finder: indexes the open folder in the background (never blocks the editor).
+  const contextOutput = vscode.window.createOutputChannel('Forge Context');
+  const workspaceContext = root ? createWorkspaceContext(root, contextOutput) : undefined;
+  context.subscriptions.push(contextOutput);
+  if (workspaceContext) context.subscriptions.push(workspaceContext);
+  registerContextCommands(context, workspaceContext, contextOutput);
 
   // Engine -> screen. The real engine is not built yet, so a contract-correct MOCK engine runs for now.
   const output = vscode.window.createOutputChannel('Forge');

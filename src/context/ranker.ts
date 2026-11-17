@@ -30,6 +30,9 @@ export interface RankerConfig {
   testPenalty: number;
   /** Same idea for documentation files: their own score is multiplied by this unless the request mentions docs. */
   docPenalty: number;
+  /** Among the first `diversityWindow` results at most this many may be test files / documentation files (one more if the request asks for them). */
+  maxTestsInWindow: number;
+  maxDocsInWindow: number;
 }
 
 export const DEFAULT_RANKER_CONFIG: RankerConfig = {
@@ -45,6 +48,8 @@ export const DEFAULT_RANKER_CONFIG: RankerConfig = {
   topSources: 3,
   testPenalty: 0.7,
   docPenalty: 0.8,
+  maxTestsInWindow: 3,
+  maxDocsInWindow: 3,
 };
 
 export interface RankedFile { path: string; score: number; reason: string }
@@ -149,12 +154,21 @@ export function rank(prompt: string, index: WorkspaceIndex, cfg: RankerConfig = 
   const selected: Candidate[] = [];
   const deferred: Candidate[] = [];
   const perDir = new Map<string, number>();
+  let testsIn = 0;
+  let docsIn = 0;
+  const testCap = cfg.maxTestsInWindow + (query.intents.has('test') ? 1 : 0);
+  const docCap = cfg.maxDocsInWindow + (query.intents.has('doc') ? 1 : 0);
   for (const c of ordered) {
     if (selected.length >= limit) break;
     if (selected.length < cfg.diversityWindow) {
       const n = perDir.get(c.file.dir) ?? 0;
-      if (n >= cfg.maxPerDir) { deferred.push(c); continue; }
+      const isTest = c.file.isTest;
+      const isDoc = c.file.isDoc && !c.file.isTest;
+      // Too many from one folder, or too many tests / docs crowding out the code: later, if there is room.
+      if (n >= cfg.maxPerDir || (isTest && testsIn >= testCap) || (isDoc && docsIn >= docCap)) { deferred.push(c); continue; }
       perDir.set(c.file.dir, n + 1);
+      if (isTest) testsIn++;
+      if (isDoc) docsIn++;
     }
     selected.push(c);
     if (selected.length === cfg.diversityWindow) { /* the window is full: later results are not limited */ }

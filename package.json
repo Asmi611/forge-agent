@@ -14,7 +14,22 @@
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Forge",
+      "properties": {
+        "forge.context.weights.path": { "type": "number", "default": 3, "exclusiveMinimum": 0, "description": "How much a match in a file's path counts when Forge picks files for a request." },
+        "forge.context.weights.symbols": { "type": "number", "default": 3, "exclusiveMinimum": 0, "description": "How much a match in function, class and variable names counts." },
+        "forge.context.weights.headings": { "type": "number", "default": 2, "exclusiveMinimum": 0, "description": "How much a match in headings and the first line of doc comments counts." },
+        "forge.context.weights.body": { "type": "number", "default": 1, "exclusiveMinimum": 0, "description": "How much a match anywhere else in the file counts." },
+        "forge.context.seedBudgetTokens": { "type": "number", "default": 3000, "minimum": 200, "description": "How much code (estimated size, characters / 4) Forge shows the AI automatically before it starts." }
+      }
+    },
     "commands": [
+      {
+        "command": "forge.showContextRanking",
+        "title": "Show Context Ranking",
+        "category": "Forge"
+      },
       {
         "command": "forge.showDemoDiff",
         "title": "Show Demo Diff (mock)",

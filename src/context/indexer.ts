@@ -288,3 +288,6 @@ export function importKey(spec: string, fromDir: string): string | undefined {
   if (spec.includes('/')) return norm(spec.split('/')); // bare path-like specifier
   return norm(spec.split('.'));
 }
+
+/** The file endings the index understands (also used to ask VS Code only for these files). */
+export const CODE_EXTENSIONS: ReadonlySet<string> = CODE_EXT;
