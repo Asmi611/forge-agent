@@ -3,9 +3,10 @@ out/
 dist/
 *.vsix
 .vscode-test/
+.freebuff/
 .env
 .env.*
-forge/*.local.*
+forge/*.local.json
 forge/models.yaml
 coverage/
 .forge-tmp/

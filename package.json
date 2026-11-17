@@ -1,0 +1,56 @@
+{
+  "name": "forge-agent",
+  "displayName": "Forge Agent",
+  "description": "An editor-native coding agent on TrueForge that proposes multi-file changes, reviews every hunk, then verifies the result.",
+  "version": "0.0.1",
+  "license": "MIT",
+  "publisher": "forge",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],    "activationEvents": ["onStartupFinished"],
+    "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "forge.showDemoDiff",
+        "title": "Forge: Show Demo Diff (mock)",
+        "category": "Forge"
+      }
+    ]
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm run lint && npm run test && npm run forbidden",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext ts",
+    "test": "vitest run",
+    "test:smoke": "vitest run --config vitest.smoke.config.ts",
+
+    "engine-cli": "ts-node --esm scripts/engine-cli.ts",
+    "eval:context": "ts-node --esm scripts/eval-context.ts",
+    "forge:setup": "ts-node --esm scripts/forge-setup.ts",
+    "forbidden": "bash scripts/forbidden-patterns.sh",
+    "clean": "rimraf out dist .vscode-test",
+    "watch": "node esbuild.config.js --watch",
+    "build": "node esbuild.config.js",
+    "test:extension": "node ./test/extension/runTest.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9",
+    "@types/node": "^22.10.1",
+    "@types/vscode": "^1.80.0",
+    "@vscode/test-electron": "^2.4.0",
+    "esbuild": "^0.25.0",
+    "eslint": "^9",
+    "rimraf": "^6.0.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.72.2",
+    "vitest": "^2.1.5"
+  },
+  "dependencies": {
+    "diff": "^5.1.0"
+  }
+}

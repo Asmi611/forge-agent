@@ -1,0 +1,24 @@
+{
+  "originalContent": "import { useState } from 'react';\n\nexport function Counter() {\n  // Add a decrement button.\n  const [count, setCount] = useState(0);\n  return (\n    <div>\n      <p>Count: {count}</p>\n      <button onClick={() => setCount(count + 1)}>Increment</button>\n    </div>\n  );\n}\n",
+  "proposedContent": "import { useState } from 'react';\n\nexport function Counter() {\n  // Add a decrement button.\n  // Verify the feature by running its tests.\n  const [count, setCount] = useState(0);\n  return (\n    <div>\n      <p>Count: {count}</p>\n      <button onClick={() => setCount(count + 1)}>Increment</button>\n      <button onClick={() => setCount((c) => c - 1)}>Decrement</button>\n    </div>\n  );\n}\n",
+  "hunks": [
+    {
+      "id": "h1",
+      "oldText": "      <p>Count: {count}</p>\n      <button onClick={() => setCount(count + 1)}>Increment</button>",
+      "newText": "      <p>Count: {count}</p>\n      <button onClick={() => setCount(count + 1)}>Increment</button>\n      <button onClick={() => setCount((c) => c - 1)}>Decrement</button>",
+      "status": "pending"
+    },
+    {
+      "id": "h2",
+      "oldText": "  // Add a decrement button.\n",
+      "newText": "  // Add a decrement button.\n  // Verify the feature by running its tests.\n",
+      "status": "pending"
+    }
+  ],
+  "rationale": "Add a Decrement button",
+  "callId": "call-demo-1",
+  "callIds": [
+    "call-demo-1"
+  ],
+  "createdAt": 1700000000000
+}
