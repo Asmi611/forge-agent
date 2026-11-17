@@ -17,6 +17,13 @@ import { registerApplyCommands } from './review/applyCommands';
 import { registerReviewCommands } from './review/reviewCommands';
 import { ReviewStatusBar } from './review/ReviewStatusBar';
 import { UndoManager } from './review/UndoManager';
+import { toReviewProposals } from './review/applyCore';
+import { createMockEngine } from './mocks/createMockEngine';
+import { EventRouter } from './ui/EventRouter';
+import { registerEngineCommands } from './ui/engineCommands';
+import { ForgeStatusBar } from './ui/StatusBar';
+import { VscodeSink } from './ui/VscodeSink';
+import type { FileProposal } from './types/contract';
 
 export function activate(context: vscode.ExtensionContext): void {
   const reviewer = new DiffReviewer();
@@ -33,6 +40,34 @@ export function activate(context: vscode.ExtensionContext): void {
   if (apply) context.subscriptions.push(apply);
   registerApplyCommands(context, reviewer, apply, undo);
   context.subscriptions.push(new ReviewStatusBar(reviewer, undo));
+
+  // Engine -> screen. The real engine is not built yet, so a contract-correct MOCK engine runs for now.
+  const output = vscode.window.createOutputChannel('Forge');
+  const status = new ForgeStatusBar();
+  context.subscriptions.push(output, status);
+  const router = new EventRouter(new VscodeSink(output, status, reviewer));
+  const engine = createMockEngine({ getProposal: loadDemoProposal });
+  registerEngineCommands(context, engine, router, output, reviewer);
+
+  // When the user finishes reviewing (applied, or everything rejected) the paused run must continue.
+  if (apply) {
+    context.subscriptions.push(apply.onDidApply((outcome) => {
+      const batchId = router.takeBatch();
+      if (batchId) void engine.reviewDone({ batchId, proposals: toReviewProposals(outcome), applyId: outcome.applyId });
+    }));
+  }
+}
+
+/** The demo proposal for the mock engine (read from fixtures/demo-proposal.json in the open folder). */
+async function loadDemoProposal(): Promise<FileProposal | undefined> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) return undefined;
+  try {
+    const raw = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, 'fixtures', 'demo-proposal.json'));
+    return proposalFromFixture(JSON.parse(new TextDecoder('utf-8').decode(raw)) as DemoFixture);
+  } catch {
+    return undefined;
+  }
 }
 
 export function deactivate(): void {

@@ -22,12 +22,12 @@
       },
       {
         "command": "forge.acceptHunk",
-        "title": "Accept change",
+        "title": "✓ Accept",
         "category": "Forge"
       },
       {
         "command": "forge.rejectHunk",
-        "title": "Reject change",
+        "title": "✗ Reject",
         "category": "Forge"
       },
       {
@@ -58,6 +58,21 @@
       {
         "command": "forge.undoLastApply",
         "title": "Undo Last Apply",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.askAgent",
+        "title": "Ask Forge (mock)",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.stop",
+        "title": "Stop",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.reviewOpen",
+        "title": "Open Review",
         "category": "Forge"
       }
     ],
