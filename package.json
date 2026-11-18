@@ -11,17 +11,44 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "configuration": {
       "title": "Forge",
       "properties": {
-        "forge.context.weights.path": { "type": "number", "default": 3, "exclusiveMinimum": 0, "description": "How much a match in a file's path counts when Forge picks files for a request." },
-        "forge.context.weights.symbols": { "type": "number", "default": 3, "exclusiveMinimum": 0, "description": "How much a match in function, class and variable names counts." },
-        "forge.context.weights.headings": { "type": "number", "default": 2, "exclusiveMinimum": 0, "description": "How much a match in headings and the first line of doc comments counts." },
-        "forge.context.weights.body": { "type": "number", "default": 1, "exclusiveMinimum": 0, "description": "How much a match anywhere else in the file counts." },
-        "forge.context.seedBudgetTokens": { "type": "number", "default": 3000, "minimum": 200, "description": "How much code (estimated size, characters / 4) Forge shows the AI automatically before it starts." }
+        "forge.context.weights.path": {
+          "type": "number",
+          "default": 3,
+          "exclusiveMinimum": 0,
+          "description": "How much a match in a file's path counts when Forge picks files for a request."
+        },
+        "forge.context.weights.symbols": {
+          "type": "number",
+          "default": 3,
+          "exclusiveMinimum": 0,
+          "description": "How much a match in function, class and variable names counts."
+        },
+        "forge.context.weights.headings": {
+          "type": "number",
+          "default": 2,
+          "exclusiveMinimum": 0,
+          "description": "How much a match in headings and the first line of doc comments counts."
+        },
+        "forge.context.weights.body": {
+          "type": "number",
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "description": "How much a match anywhere else in the file counts."
+        },
+        "forge.context.seedBudgetTokens": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 200,
+          "description": "How much code (estimated size, characters / 4) Forge shows the AI automatically before it starts."
+        }
       }
     },
     "commands": [
@@ -37,12 +64,12 @@
       },
       {
         "command": "forge.acceptHunk",
-        "title": "✓ Accept",
+        "title": "\u2713 Accept",
         "category": "Forge"
       },
       {
         "command": "forge.rejectHunk",
-        "title": "✗ Reject",
+        "title": "\u2717 Reject",
         "category": "Forge"
       },
       {
@@ -89,6 +116,11 @@
         "command": "forge.reviewOpen",
         "title": "Open Review",
         "category": "Forge"
+      },
+      {
+        "command": "forge.inlineEdit",
+        "title": "Edit Selection with Forge",
+        "category": "Forge"
       }
     ],
     "menus": {
@@ -114,7 +146,21 @@
           "when": "false"
         }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "forge.inlineEdit",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "editorHasSelection && editorTextFocus"
+      },
+      {
+        "command": "forge.inlineEdit",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k",
+        "when": "editorTextFocus"
+      }
+    ]
   },
   "scripts": {
     "check": "npm run typecheck && npm run lint && npm run test && npm run forbidden",
@@ -122,7 +168,6 @@
     "lint": "eslint src --ext ts",
     "test": "vitest run",
     "test:smoke": "vitest run --config vitest.smoke.config.ts",
-
     "engine-cli": "ts-node --esm scripts/engine-cli.ts",
     "eval:context": "ts-node --esm scripts/eval-context.ts",
     "forge:setup": "ts-node --esm scripts/forge-setup.ts",

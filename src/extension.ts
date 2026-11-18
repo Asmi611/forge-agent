@@ -21,6 +21,7 @@ import { toReviewProposals } from './review/applyCore';
 import { createMockEngine } from './mocks/createMockEngine';
 import { EventRouter } from './ui/EventRouter';
 import { registerEngineCommands } from './ui/engineCommands';
+import { registerInlineEdit } from './ui/InlineEdit';
 import { ForgeStatusBar } from './ui/StatusBar';
 import { VscodeSink } from './ui/VscodeSink';
 import type { FileProposal } from './types/contract';
@@ -57,6 +58,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const router = new EventRouter(new VscodeSink(output, status, reviewer));
   const engine = createMockEngine({ getProposal: loadDemoProposal });
   registerEngineCommands(context, engine, router, output, reviewer);
+  registerInlineEdit(context, engine, router, output);
 
   // When the user finishes reviewing (applied, or everything rejected) the paused run must continue.
   if (apply) {
