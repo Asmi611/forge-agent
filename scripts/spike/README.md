@@ -18,7 +18,7 @@ Run all scripts from the repository root using plain Node (`node scripts/spike/<
 | `03-approval.recovered.mjs` | Q4, Q5, Q6, Q14: approval pause/resume across 5 modes, bounded timeout, and identical-call capability probe |
 | `04-cancel.mjs` | Q7: cancel during active streaming; repeated cancellation request behavior |
 
-> **Note on approval scripts:** `scripts/spike/03-approval.recovered.mjs` is the live-verified implementation (supporting turn event subscriptions, bounded session cancellation on timeout, exact execution count assertions, and identical-call permutations). `scripts/spike/03-approval.mjs` is retained as the original baseline.
+> **Note on approval scripts:** `scripts/spike/03-approval.recovered.mjs` is the authoritative, live-verified script used to generate all `03-*` fixtures (supporting turn event subscriptions, bounded session cancellation on timeout, exact execution count assertions, and identical-call permutations). `scripts/spike/03-approval.mjs` is retained as a historical prototype illustrating the earlier turn-based input approach prior to verifying TrueForge's same-turn `/events` wire protocol. Both scripts are retained in the repository for auditability.
 
 ## Running the approval script (`03-approval.recovered.mjs`)
 
