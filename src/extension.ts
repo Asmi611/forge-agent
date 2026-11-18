@@ -24,6 +24,7 @@ import { registerEngineCommands } from './ui/engineCommands';
 import { registerInlineEdit } from './ui/InlineEdit';
 import { ForgeStatusBar } from './ui/StatusBar';
 import { VscodeSink } from './ui/VscodeSink';
+import { AgentPanel, PANEL_VIEW_ID } from './ui/AgentPanel/AgentPanel';
 import type { FileProposal } from './types/contract';
 import { registerContextCommands } from './context/contextCommands';
 import { createWorkspaceContext } from './context/workspaceContext';
@@ -55,8 +56,19 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Forge');
   const status = new ForgeStatusBar();
   context.subscriptions.push(output, status);
-  const router = new EventRouter(new VscodeSink(output, status, reviewer));
   const engine = createMockEngine({ getProposal: loadDemoProposal });
+  const panel = new AgentPanel(context.extensionUri, {
+    engine, reviewer, undo,
+    resolveMention: workspaceContext ? (raw) => workspaceContext.provider.resolveMention(raw) : undefined,
+    files: workspaceContext ? () => workspaceContext.index.files.values() : undefined,
+  });
+  context.subscriptions.push(panel, vscode.window.registerWebviewViewProvider(PANEL_VIEW_ID, panel, { webviewOptions: { retainContextWhenHidden: true } }));
+  const router = new EventRouter(new VscodeSink(output, status, reviewer), panel.observe);
+  panel.attachRouter(router);
+  context.subscriptions.push(vscode.commands.registerCommand('forge.showPanel', async () => {
+    await vscode.commands.executeCommand('workbench.view.extension.forge');
+    panel.focusInput();
+  }));
   registerEngineCommands(context, engine, router, output, reviewer);
   registerInlineEdit(context, engine, router, output);
 

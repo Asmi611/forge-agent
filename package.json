@@ -121,6 +121,11 @@
         "command": "forge.inlineEdit",
         "title": "Edit Selection with Forge",
         "category": "Forge"
+      },
+      {
+        "command": "forge.showPanel",
+        "title": "Open Forge Panel",
+        "category": "Forge"
       }
     ],
     "menus": {
@@ -160,7 +165,25 @@
         "mac": "cmd+alt+k",
         "when": "editorTextFocus"
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "forge",
+          "title": "Forge",
+          "icon": "media/forge.svg"
+        }
+      ]
+    },
+    "views": {
+      "forge": [
+        {
+          "type": "webview",
+          "id": "forge.agentPanel",
+          "name": "Forge Agent"
+        }
+      ]
+    }
   },
   "scripts": {
     "check": "npm run typecheck && npm run lint && npm run test && npm run forbidden",

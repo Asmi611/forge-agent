@@ -23,7 +23,8 @@ export class EventRouter {
   private batchId: string | undefined;
   private proposals = 0;
 
-  constructor(private readonly sink: RouterSink) {}
+  /** `observer` sees every raw event first (the agent panel uses it). It can never break the stream. */
+  constructor(private readonly sink: RouterSink, private readonly observer?: (e: EngineEvent) => void) {}
 
   /** Returns (and forgets) the batch waiting for review, so reviewDone is sent exactly once per batch. */
   takeBatch(): string | undefined {
@@ -39,6 +40,7 @@ export class EventRouter {
     try {
       for await (const e of stream) {
         try {
+          try { this.observer?.(e); } catch (err) { this.sink.log(`panel error on ${e.type}: ${err instanceof Error ? err.message : String(err)}`); }
           this.handle(e);
         } catch (err) {
           this.sink.log(`router error on ${e.type}: ${err instanceof Error ? err.message : String(err)}`);
