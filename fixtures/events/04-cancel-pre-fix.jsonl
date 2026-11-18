@@ -1,0 +1,3 @@
+{"event":"message","data":{"type":"turn.created","id":"01m7areat5e5wzmmt0q4p8kdfd","turn_id":"01m7areat11yrsj5q6zhjja8j4","previous_turn_id":null,"input":[{"type":"user.message","content":"Write a 600 word story about a lighthouse."}],"state":{"status":"running"},"created_at":"2026-11-13T15:29:27.874Z","thread_id":null}}
+{"event":"message","data":{"type":"model.message","thread_id":"main","created_at":"2026-11-13T15:29:27.878Z","id":"01m7areat618v2e1nfhwavmxra","model":{"name":"google-gemini/gemini-3-1-flash-lite","params":{"max_tokens":65536}}}}
+{"event":"__stream_error","data":"ReferenceError: frame is not defined"}
