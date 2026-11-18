@@ -23,7 +23,7 @@ export function registerInlineEdit(context: vscode.ExtensionContext, engine: Eng
 
       const instruction = await vscode.window.showInputBox({
         title: `Forge: change lines ${first.startLine}-${first.endLine} of ${first.path}`,
-        prompt: 'What should Forge do with the selected code? (Press Enter to start, Escape to cancel. Nothing is saved until you Apply.)',
+        prompt: 'What should Forge do with the selected code? (Press Enter to start, Escape to cancel. Nothing is saved until you review and press Save.)',
         placeHolder: 'For example: add a docstring',
       });
       if (instruction === undefined) return; // Escape = do nothing

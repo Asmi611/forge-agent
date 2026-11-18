@@ -70,7 +70,7 @@ export function statusBarText(c: ReviewCounts): { text: string; tooltip: string 
   const s = (n: number): string => (n === 1 ? '' : 's');
   if (c.accepted > 0) {
     return {
-      text: `$(check-all) Apply ${c.accepted} of ${c.total} change${s(c.total)}`,
+      text: `$(check-all) Save ${c.accepted} of ${c.total} change${s(c.total)}`,
       tooltip: 'Click to save the accepted changes to your files. Rejected and undecided changes are not saved.',
     };
   }

@@ -18,12 +18,12 @@ export class ReviewStatusBar implements vscode.Disposable {
     private readonly reviewer: DiffReviewer,
     private readonly undo?: UndoManager,
   ) {
-    this.applyItem.name = 'Forge: Apply accepted changes';
+    this.applyItem.name = 'Forge: Save accepted changes';
     this.applyItem.command = 'forge.applyAccepted';
-    this.undoItem.name = 'Forge: Undo last apply';
+    this.undoItem.name = 'Forge: Undo last save';
     this.undoItem.command = 'forge.undoLastApply';
-    this.undoItem.text = '$(discard) Undo last apply';
-    this.undoItem.tooltip = 'Put the files back exactly as they were before the last Apply.';
+    this.undoItem.text = '$(discard) Undo last save';
+    this.undoItem.tooltip = 'Put the files back exactly as they were before the last save.';
     this.subscriptions.push(this.reviewer.onDidChangeProposals(() => this.update()));
     if (this.undo) this.subscriptions.push(this.undo.onDidChange(() => this.update()));
     this.update();

@@ -9,7 +9,7 @@ export function registerEngineCommands(context: vscode.ExtensionContext, engine:
     vscode.commands.registerCommand('forge.askAgent', async () => {
       const prompt = await vscode.window.showInputBox({
         title: 'Ask Forge',
-        prompt: 'What should Forge do? (Mock engine for now. Try: mock:error, mock:failover or mock:cancel)',
+        prompt: 'What should Forge do? Nothing is saved until you review and press Save.',
         placeHolder: 'For example: add a decrement button',
       });
       if (!prompt?.trim()) return; // Escape = do nothing

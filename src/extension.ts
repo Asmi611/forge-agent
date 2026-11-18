@@ -17,7 +17,7 @@ import { registerApplyCommands } from './review/applyCommands';
 import { registerReviewCommands } from './review/reviewCommands';
 import { ReviewStatusBar } from './review/ReviewStatusBar';
 import { UndoManager } from './review/UndoManager';
-import { toReviewProposals } from './review/applyCore';
+import { buildReviewResult } from './review/reviewBatch';
 import { createMockEngine } from './mocks/createMockEngine';
 import { EventRouter } from './ui/EventRouter';
 import { registerEngineCommands } from './ui/engineCommands';
@@ -75,8 +75,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // When the user finishes reviewing (applied, or everything rejected) the paused run must continue.
   if (apply) {
     context.subscriptions.push(apply.onDidApply((outcome) => {
-      const batchId = router.takeBatch();
-      if (batchId) void engine.reviewDone({ batchId, proposals: toReviewProposals(outcome), applyId: outcome.applyId });
+      const result = buildReviewResult(router.currentBatch(), outcome);
+      if (!result) return; // not for the waiting run (for example proposals reopened by Undo): never answer twice
+      router.takeBatch();
+      engine.reviewDone(result).catch((err: unknown) => output.appendLine(`reviewDone failed: ${err instanceof Error ? err.message : String(err)}`));
     }));
   }
 }

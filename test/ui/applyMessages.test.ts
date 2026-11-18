@@ -27,10 +27,10 @@ describe('what the Apply button does', () => {
 
 describe('bottom bar text', () => {
   it('says what a click will do', () => {
-    expect(statusBarText(countHunks([p('accepted', 'pending')])).text).toBe('$(check-all) Apply 1 of 2 changes');
+    expect(statusBarText(countHunks([p('accepted', 'pending')])).text).toBe('$(check-all) Save 1 of 2 changes');
     expect(statusBarText(countHunks([p('pending', 'pending')])).text).toBe('$(eye) 2 changes to review');
     expect(statusBarText(countHunks([p('rejected', 'rejected')])).text).toBe('$(close) Close review (nothing accepted)');
-    expect(statusBarText(countHunks([p('accepted')])).text).toBe('$(check-all) Apply 1 of 1 change');
+    expect(statusBarText(countHunks([p('accepted')])).text).toBe('$(check-all) Save 1 of 1 change');
   });
 });
 

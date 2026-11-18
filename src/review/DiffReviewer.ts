@@ -195,7 +195,7 @@ export class DiffReviewer implements vscode.Disposable, vscode.TextDocumentConte
     if (!h) throw new RangeError('no such hunk');
     const plural = (n: number): string => `${n} line${n === 1 ? '' : 's'}`;
     const what = h.oldLines === 0 ? `Adds ${plural(h.newLines)}` : h.newLines === 0 ? `Removes ${plural(h.oldLines)}` : `Replaces ${plural(h.oldLines)} with ${h.newLines}`;
-    const label = h.status === 'accepted' ? '✓ Accepted: saved when you Apply' : h.status === 'rejected' ? '✗ Rejected: will not be saved' : 'Undecided';
+    const label = h.status === 'accepted' ? '✓ Accepted: saved when you press Save' : h.status === 'rejected' ? '✗ Rejected: will not be saved' : 'Undecided';
     return new HunkComment(`Change ${hunkIndex + 1} of ${p.hunks.length}: ${what}.`, label, `${HUNK_PREFIX}${encodeURIComponent(p.id)}:${h.id}`);
   }
 

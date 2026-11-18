@@ -94,17 +94,17 @@
       },
       {
         "command": "forge.applyAccepted",
-        "title": "Apply Accepted Changes",
+        "title": "Save Accepted Changes",
         "category": "Forge"
       },
       {
         "command": "forge.undoLastApply",
-        "title": "Undo Last Apply",
+        "title": "Undo Last Save",
         "category": "Forge"
       },
       {
         "command": "forge.askAgent",
-        "title": "Ask Forge (mock)",
+        "title": "Ask Forge",
         "category": "Forge"
       },
       {

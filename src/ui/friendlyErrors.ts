@@ -43,6 +43,6 @@ export function friendlyError(error: ForgeError, appliedAny = false): string {
       text = 'Something went wrong. Try again.';
   }
   return appliedAny
-    ? `Forge: ${text} Changes you already applied are saved; use "Undo last apply" to take them back.`
+    ? `Forge: ${text} Changes you already saved are kept; use "Undo last save" to take them back.`
     : `Forge: ${text} Nothing was changed.`;
 }

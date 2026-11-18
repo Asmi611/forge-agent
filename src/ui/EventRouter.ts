@@ -21,6 +21,7 @@ export interface RouterSink {
 
 export class EventRouter {
   private batchId: string | undefined;
+  private batchProposalIds: string[] = [];
   private proposals = 0;
 
   /** `observer` sees every raw event first (the agent panel uses it). It can never break the stream. */
@@ -30,7 +31,13 @@ export class EventRouter {
   takeBatch(): string | undefined {
     const id = this.batchId;
     this.batchId = undefined;
+    this.batchProposalIds = [];
     return id;
+  }
+
+  /** The batch waiting for review right now (not consumed). */
+  currentBatch(): { batchId: string; proposalIds: string[] } | undefined {
+    return this.batchId === undefined ? undefined : { batchId: this.batchId, proposalIds: [...this.batchProposalIds] };
   }
 
   async consume(stream: AsyncIterable<EngineEvent>): Promise<void> {
@@ -69,6 +76,7 @@ export class EventRouter {
       case 'proposal.created': this.proposals++; s.addProposal(e.proposal); s.log(`proposal: ${e.proposal.path} (${e.proposal.hunks.length} change${e.proposal.hunks.length === 1 ? '' : 's'})`); break;
       case 'review.required':
         this.batchId = e.batchId;
+        this.batchProposalIds = [...e.proposalIds];
         s.setStatus({ kind: 'reviewing', files: e.proposalIds.length });
         s.openReview(e.proposalIds[0]);
         break;

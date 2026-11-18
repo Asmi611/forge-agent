@@ -19,7 +19,7 @@ export function statusLabel(state: StatusState, model: string): { text: string; 
   switch (state.kind) {
     case 'running': return { text: `$(sync~spin) Forge: working…${m}`, tooltip: 'Forge is working. Click to stop.', command: 'forge.stop' };
     case 'retrying': return { text: `$(sync~spin) Forge: retrying ${state.attempt}/${state.max}${m}`, tooltip: 'The model had a problem; Forge is trying again. Click to stop.', command: 'forge.stop' };
-    case 'reviewing': return { text: `$(eye) Forge: ${state.files} file${state.files === 1 ? '' : 's'} to review${m}`, tooltip: 'Review each change in the diff, then use "Apply" at the bottom.', command: 'forge.reviewOpen' };
+    case 'reviewing': return { text: `$(eye) Forge: ${state.files} file${state.files === 1 ? '' : 's'} to review${m}`, tooltip: 'Review each change in the diff, then press "Save" at the bottom.', command: 'forge.reviewOpen' };
     default: return { text: `$(sparkle) Forge${m}`, tooltip: 'Click to ask Forge to do something.', command: 'forge.askAgent' };
   }
 }
