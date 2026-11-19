@@ -17,7 +17,7 @@ import {
 } from '../src/engine/index.ts';
 import { ForgeClient } from '../src/engine/ForgeClient.ts';
 import { loadConfig, type EngineConfig } from '../src/engine/config.ts';
-import { MockUiHost } from '../src/mocks/MockUiHost.ts';
+import { FsUiHost } from '../src/engine/FsUiHost.ts';
 
 /**
  * Pluggable dependencies for testing runCli() in isolation.
@@ -301,7 +301,7 @@ export async function runCli(args: string[], deps?: CliDependencies): Promise<nu
   }
 
   // 4. Construct UI host and engine using the exact same client instance
-  const host = deps?.host ?? new MockUiHost(workspaceRoot);
+  const host = deps?.host ?? new FsUiHost(workspaceRoot);
   const engine =
     deps?.engine ??
     createEngine(host, {
@@ -346,6 +346,7 @@ function isProposalHandlerProvider(obj: unknown): obj is ProposalHandlerProvider
         proposalProvider,
         name: config.setup.mcp.name,
         port: config.setup.mcp.port,
+        token: config.setup.mcp.token,
       });
     } catch (err: unknown) {
       stderr(`Failed to start MCP tool server: ${(err as Error).message}`);
