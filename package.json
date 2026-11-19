@@ -16,13 +16,174 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Forge",
+      "properties": {
+        "forge.context.weights.path": {
+          "type": "number",
+          "default": 3,
+          "exclusiveMinimum": 0,
+          "description": "How much a match in a file's path counts when Forge picks files for a request."
+        },
+        "forge.context.weights.symbols": {
+          "type": "number",
+          "default": 3,
+          "exclusiveMinimum": 0,
+          "description": "How much a match in function, class and variable names counts."
+        },
+        "forge.context.weights.headings": {
+          "type": "number",
+          "default": 2,
+          "exclusiveMinimum": 0,
+          "description": "How much a match in headings and the first line of doc comments counts."
+        },
+        "forge.context.weights.body": {
+          "type": "number",
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "description": "How much a match anywhere else in the file counts."
+        },
+        "forge.context.seedBudgetTokens": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 200,
+          "description": "How much code (estimated size, characters / 4) Forge shows the AI automatically before it starts."
+        }
+      }
+    },
     "commands": [
       {
+        "command": "forge.showContextRanking",
+        "title": "Show Context Ranking",
+        "category": "Forge"
+      },
+      {
         "command": "forge.showDemoDiff",
-        "title": "Forge: Show Demo Diff (mock)",
+        "title": "Show Demo Diff (mock)",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.acceptHunk",
+        "title": "\u2713 Accept",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.rejectHunk",
+        "title": "\u2717 Reject",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.acceptHunkAtCursor",
+        "title": "Accept Change Under Cursor",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.rejectHunkAtCursor",
+        "title": "Reject Change Under Cursor",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.acceptAllHunks",
+        "title": "Accept All Changes in This Diff",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.rejectAllHunks",
+        "title": "Reject All Changes in This Diff",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.applyAccepted",
+        "title": "Save Accepted Changes",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.undoLastApply",
+        "title": "Undo Last Save",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.askAgent",
+        "title": "Ask Forge",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.stop",
+        "title": "Stop",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.reviewOpen",
+        "title": "Open Review",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.inlineEdit",
+        "title": "Edit Selection with Forge",
+        "category": "Forge"
+      },
+      {
+        "command": "forge.showPanel",
+        "title": "Open Forge Panel",
         "category": "Forge"
       }
-    ]
+    ],
+    "menus": {
+      "comments/comment/title": [
+        {
+          "command": "forge.acceptHunk",
+          "group": "inline@1",
+          "when": "commentController == forge-review"
+        },
+        {
+          "command": "forge.rejectHunk",
+          "group": "inline@2",
+          "when": "commentController == forge-review"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "forge.acceptHunk",
+          "when": "false"
+        },
+        {
+          "command": "forge.rejectHunk",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "forge.inlineEdit",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "editorHasSelection && editorTextFocus"
+      },
+      {
+        "command": "forge.inlineEdit",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k",
+        "when": "editorTextFocus"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "forge",
+          "title": "Forge",
+          "icon": "media/forge.svg"
+        }
+      ]
+    },
+    "views": {
+      "forge": [
+        {
+          "type": "webview",
+          "id": "forge.agentPanel",
+          "name": "Forge Agent"
+        }
+      ]
+    }
   },
   "scripts": {
     "check": "npm run typecheck && npm run lint && npm run test && npm run forbidden",
