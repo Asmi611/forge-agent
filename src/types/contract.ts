@@ -1,17 +1,17 @@
 /**
- * src/types/contract.ts  --  CONTRACT v2 (DRAFT-1)
- * Frozen at Gate G1 (after the TrueForge spike). Afterwards: joint PR only.
+ * src/types/contract.ts  --  CONTRACT v2.1.0 (FROZEN AT GATE G1)
+ * Frozen at Gate G1. Changes require a joint PR per AGENTS.md Rule 7.
  *
  * Rules of the stream (engine promises, UI relies on them):
  *  - Run generators NEVER throw. Failures become `run.failed`.
  *  - Every run ends with exactly ONE of: run.completed | run.cancelled | run.failed.
- *  - A run may span several TrueForge turns (pause for approval -> new turn). The UI never sees turns.
+ *  - A run may span approval pauses (pause for approval -> resume turn via /events). The UI never sees turns.
  *  - `review.required` is NOT terminal: the run is paused until UI calls reviewDone() or cancel().
  *  - The engine NEVER writes workspace files. Only the UI's ApplyManager/UndoManager write.
  *  - Lines are 1-based. proposedContent = originalContent with ALL hunks applied.
  */
 
-export const CONTRACT_VERSION = '2.1.0-draft2';
+export const CONTRACT_VERSION = '2.1.0';
 
 // ───────────── errors ─────────────
 export type ErrorKind =

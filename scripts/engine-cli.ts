@@ -1,59 +1,383 @@
 #!/usr/bin/env node
 /**
- * Forge Agent — engine CLI placeholder (S-01).
+ * Forge Agent -- engine CLI entrypoint.
  *
- * Minimal runnable stub for `npm run engine-cli`.
- *
- * NOT a real engine. This is a bootstrap placeholder only; the real
- * engine loop (SessionOrchestrator, ResilienceManager, ProposalStore,
- * TrueForge HTTP/SSE client) is Dev 1 card work and is NOT implemented
- * here. No model-provider calls, no shell commands, no workspace writes.
- *
- * Purpose: keep `npm run engine-cli` runnable in the S-01 bootstrap so
- * the script declaration in package.json resolves to a valid, exit-0
- * entry point without fabricating engine or TrueForge functionality.
+ * Runs the engine with MockUiHost (or injected host) against a workspace path,
+ * streaming EngineEvents to stdout as JSON lines with health pre-check and error logging.
  */
 
 import * as path from 'node:path';
+import type { EngineApi, UiHost } from '../src/types/contract.ts';
+import { createEngine } from '../src/engine/index.ts';
+import { ForgeClient } from '../src/engine/ForgeClient.ts';
+import { loadConfig, type EngineConfig } from '../src/engine/config.ts';
+import { MockUiHost } from '../src/mocks/MockUiHost.ts';
 
-// The extension host does not resolve __dirname in ESM output, so resolve
-// the project root from the current working directory.
+/**
+ * Pluggable dependencies for testing runCli() in isolation.
+ */
+export interface CliDependencies {
+  host?: UiHost;
+  engine?: EngineApi;
+  client?: ForgeClient;
+  config?: EngineConfig;
+  healthCheck?: (client: ForgeClient) => Promise<{ ok: boolean; detail?: string }>;
+  stdout?: (message: string) => void;
+  stderr?: (message: string) => void;
+  workspaceRoot?: string;
+  forgeDir?: string;
+}
 
-function printUsage(): void {
-  console.log(`forge-agent engine CLI (S-01 placeholder)
+/**
+ * Parsed CLI options.
+ */
+interface ParsedCliArgs {
+  prompt?: string;
+  forgeDir?: string;
+  workspaceRoot?: string;
+  mode: 'agent' | 'inline';
+  profile?: 'primary' | 'fallback';
+  help: boolean;
+}
+
+/**
+ * Result of parsing CLI arguments.
+ */
+type ParseResult =
+  | { success: true; parsed: ParsedCliArgs }
+  | { success: false; error: string };
+
+/**
+ * Parses raw command line arguments with strict validation.
+ */
+function parseCliArgs(args: string[]): ParseResult {
+  const parsed: ParsedCliArgs = {
+    mode: 'agent',
+    help: false,
+  };
+
+  const positional: string[] = [];
+  let endOfOptions = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (endOfOptions) {
+      positional.push(arg);
+      continue;
+    }
+
+    if (arg === '--') {
+      endOfOptions = true;
+      continue;
+    }
+
+    if (arg === '--help' || arg === '-h') {
+      parsed.help = true;
+      continue;
+    }
+
+    // --forgeDir / --forge-dir
+    if (arg === '--forgeDir' || arg === '--forge-dir') {
+      if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
+        return { success: false, error: `Missing value for option '${arg}'` };
+      }
+      parsed.forgeDir = args[++i];
+      continue;
+    }
+    if (arg.startsWith('--forgeDir=')) {
+      const val = arg.slice('--forgeDir='.length);
+      if (!val) {
+        return { success: false, error: `Missing value for option '--forgeDir'` };
+      }
+      parsed.forgeDir = val;
+      continue;
+    }
+    if (arg.startsWith('--forge-dir=')) {
+      const val = arg.slice('--forge-dir='.length);
+      if (!val) {
+        return { success: false, error: `Missing value for option '--forge-dir'` };
+      }
+      parsed.forgeDir = val;
+      continue;
+    }
+
+    // --workspace / -w
+    if (arg === '--workspace' || arg === '-w') {
+      if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
+        return { success: false, error: `Missing value for option '${arg}'` };
+      }
+      parsed.workspaceRoot = args[++i];
+      continue;
+    }
+    if (arg.startsWith('--workspace=')) {
+      const val = arg.slice('--workspace='.length);
+      if (!val) {
+        return { success: false, error: `Missing value for option '--workspace'` };
+      }
+      parsed.workspaceRoot = val;
+      continue;
+    }
+    if (arg.startsWith('-w=')) {
+      const val = arg.slice('-w='.length);
+      if (!val) {
+        return { success: false, error: `Missing value for option '-w'` };
+      }
+      parsed.workspaceRoot = val;
+      continue;
+    }
+
+    // --mode / -m
+    if (arg === '--mode' || arg === '-m') {
+      if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
+        return { success: false, error: `Missing value for option '${arg}'` };
+      }
+      const val = args[++i];
+      if (val !== 'agent' && val !== 'inline') {
+        return { success: false, error: `Invalid value for '${arg}': '${val}' (expected 'agent' or 'inline')` };
+      }
+      parsed.mode = val;
+      continue;
+    }
+    if (arg.startsWith('--mode=')) {
+      const val = arg.slice('--mode='.length);
+      if (val !== 'agent' && val !== 'inline') {
+        return { success: false, error: `Invalid value for '--mode': '${val}' (expected 'agent' or 'inline')` };
+      }
+      parsed.mode = val;
+      continue;
+    }
+    if (arg.startsWith('-m=')) {
+      const val = arg.slice('-m='.length);
+      if (val !== 'agent' && val !== 'inline') {
+        return { success: false, error: `Invalid value for '-m': '${val}' (expected 'agent' or 'inline')` };
+      }
+      parsed.mode = val;
+      continue;
+    }
+
+    // --profile / -p
+    if (arg === '--profile' || arg === '-p') {
+      if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
+        return { success: false, error: `Missing value for option '${arg}'` };
+      }
+      const val = args[++i];
+      if (val !== 'primary' && val !== 'fallback') {
+        return { success: false, error: `Invalid value for '${arg}': '${val}' (expected 'primary' or 'fallback')` };
+      }
+      parsed.profile = val;
+      continue;
+    }
+    if (arg.startsWith('--profile=')) {
+      const val = arg.slice('--profile='.length);
+      if (val !== 'primary' && val !== 'fallback') {
+        return { success: false, error: `Invalid value for '--profile': '${val}' (expected 'primary' or 'fallback')` };
+      }
+      parsed.profile = val;
+      continue;
+    }
+    if (arg.startsWith('-p=')) {
+      const val = arg.slice('-p='.length);
+      if (val !== 'primary' && val !== 'fallback') {
+        return { success: false, error: `Invalid value for '-p': '${val}' (expected 'primary' or 'fallback')` };
+      }
+      parsed.profile = val;
+      continue;
+    }
+
+    // Reject unknown options starting with '-'
+    if (arg.startsWith('-')) {
+      return { success: false, error: `Unknown option: '${arg}'` };
+    }
+
+    positional.push(arg);
+  }
+
+  if (positional.length > 0) {
+    parsed.prompt = positional.join(' ');
+  }
+
+  return { success: true, parsed };
+}
+
+/**
+ * Prints usage and command options to the specified writer.
+ */
+function printUsage(writer: (msg: string) => void): void {
+  writer(`Forge Agent Engine CLI
 
 Usage:
-  npm run engine-cli -- "<prompt>"
+  npx vite-node --script scripts/engine-cli.ts --forgeDir <path> [options] "<prompt>"
 
-This is a bootstrap stub. The real engine loop runs on TrueForge and is
-card work, not yet implemented.
+Options:
+  --forgeDir <path>     Path to forge directory containing setup and models configuration (required)
+  --workspace <path>    Path to workspace root directory (default: current working directory)
+  --mode <mode>         Run mode: 'agent' or 'inline' (default: 'agent')
+  --profile <profile>   Model profile: 'primary' or 'fallback' (default: 'primary')
+  -h, --help            Show this help message and exit
 
-Env:
-  FORGE_BASE_URL   TrueForge base URL (default: http://localhost:8790)
-  FORGE_AGENT      Primary agent id (default: forge-primary)
-
-Example:
-  npm run engine-cli -- "say hello"
+Exit codes:
+  0   Success (completed or help)
+  1   Failed run, invalid arguments, or unreachable TrueForge service
+  130 Run was cancelled
 `);
 }
 
-function main(): void {
-  const args = process.argv.slice(2);
-  const prompt = args[0];
+/**
+ * Runs the CLI entrypoint with support for test dependency injection.
+ *
+ * @param args - Command line arguments (excluding node and script name)
+ * @param deps - Optional dependency overrides for testing
+ * @returns Exit code: 0 on success, 1 on error/failure, 130 on cancellation
+ */
+export async function runCli(args: string[], deps?: CliDependencies): Promise<number> {
+  const stdout = deps?.stdout ?? ((msg: string) => console.log(msg));
+  const stderr = deps?.stderr ?? ((msg: string) => console.error(msg));
 
-  if (args.includes('--help') || args.includes('-h')) {
-    printUsage();
-    process.exit(0);
+  const parseResult = parseCliArgs(args);
+  if (!parseResult.success) {
+    stderr(`Error: ${parseResult.error}`);
+    printUsage(stderr);
+    return 1;
+  }
+  const parsed = parseResult.parsed;
+
+  if (parsed.help) {
+    printUsage(stdout);
+    return 0;
   }
 
-  if (!prompt) {
-    console.error('forge-agent engine-cli: missing prompt argument');
-    printUsage();
-    process.exit(1);
+  if (!parsed.prompt || parsed.prompt.trim() === '') {
+    stderr('Error: missing required prompt argument');
+    printUsage(stderr);
+    return 1;
   }
 
-  console.log(`engine-cli placeholder: prompt="${prompt}"`);
-  console.log('engine-cli placeholder: no engine loop run (S-01 bootstrap only).');
+  const rawForgeDir = parsed.forgeDir ?? deps?.forgeDir;
+  if (!rawForgeDir || rawForgeDir.trim() === '') {
+    stderr('Error: missing required --forgeDir argument');
+    printUsage(stderr);
+    return 1;
+  }
+
+  const workspaceRoot = path.resolve(parsed.workspaceRoot ?? deps?.workspaceRoot ?? process.cwd());
+  const forgeDir = path.isAbsolute(rawForgeDir)
+    ? rawForgeDir
+    : path.resolve(workspaceRoot, rawForgeDir);
+
+  // 1. Load engine configuration
+  let config = deps?.config;
+  if (!config) {
+    try {
+      config = loadConfig({ workspaceRoot, forgeDir });
+    } catch (err: unknown) {
+      stderr(`Failed to load engine configuration from '${forgeDir}': ${(err as Error).message}`);
+      return 1;
+    }
+  }
+
+  // 2. Construct one ForgeClient instance and share it with health check and createEngine
+  const client = deps?.client ?? new ForgeClient(config.setup);
+
+  // 3. Health pre-check using the same ForgeClient instance
+  const healthFn = deps?.healthCheck ?? ((c: ForgeClient) => c.health());
+  try {
+    const health = await healthFn(client);
+    if (!health.ok) {
+      stderr(`TrueForge service is unreachable at ${config.setup.baseUrl}: ${health.detail ?? 'Service unhealthy'}`);
+      return 1;
+    }
+  } catch (err: unknown) {
+    stderr(`TrueForge health check failed at ${config.setup.baseUrl}: ${(err as Error).message}`);
+    return 1;
+  }
+
+  // 4. Construct UI host and engine using the exact same client instance
+  const host = deps?.host ?? new MockUiHost(workspaceRoot);
+  const engine =
+    deps?.engine ??
+    createEngine(host, {
+      forgeDir,
+      config,
+      client,
+    });
+
+  // 5. Select model profile if requested
+  if (parsed.profile && typeof engine.switchModel === 'function') {
+    try {
+      await engine.switchModel(parsed.profile);
+    } catch (err: unknown) {
+      stderr(`Failed to switch model profile to '${parsed.profile}': ${(err as Error).message}`);
+      return 1;
+    }
+  }
+
+  // 6. Execute run stream and verify terminal event outcome
+  let terminalReceived = false;
+  let exitCode = 1;
+
+  try {
+    const stream =
+      parsed.mode === 'inline'
+        ? engine.runInline({
+            prompt: parsed.prompt,
+            path: 'inline.txt',
+            selectedText: parsed.prompt,
+            range: { startLine: 1, endLine: 1 },
+          })
+        : engine.runAgent({
+            prompt: parsed.prompt,
+            mentions: [],
+          });
+
+    for await (const event of stream) {
+      stdout(JSON.stringify(event));
+
+      if (event.type === 'run.completed') {
+        terminalReceived = true;
+        exitCode = 0;
+      } else if (event.type === 'run.cancelled') {
+        terminalReceived = true;
+        exitCode = 130;
+        stderr('Run was cancelled');
+      } else if (event.type === 'run.failed') {
+        terminalReceived = true;
+        exitCode = 1;
+        stderr(`Run failed [${event.error.kind}]: ${event.error.message}`);
+      }
+    }
+  } catch (err: unknown) {
+    stderr(`CLI execution error: ${(err as Error).message}`);
+    return 1;
+  }
+
+  if (!terminalReceived) {
+    stderr('Stream ended unexpectedly without a terminal event');
+    return 1;
+  }
+
+  return exitCode;
 }
 
-main();
+/**
+ * Pure guard checking if this file is the direct CLI entrypoint.
+ * Avoids import.meta, require, __filename, or top-level await.
+ */
+function isDirectExecution(): boolean {
+  if (typeof process === 'undefined' || !process.argv || !process.argv[1]) {
+    return false;
+  }
+  const entry = process.argv[1].replace(/\\/g, '/');
+  return /scripts\/engine-cli\.(?:[cm]?[jt]s)$/.test(entry) || entry.endsWith('engine-cli');
+}
+
+if (isDirectExecution()) {
+  runCli(process.argv.slice(2))
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((err: unknown) => {
+      console.error('Fatal CLI execution error:', err);
+      process.exitCode = 1;
+    });
+}
