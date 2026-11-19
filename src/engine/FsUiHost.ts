@@ -70,7 +70,11 @@ class FsContextProvider implements ContextProvider {
   /** Generates a basic directory tree of the workspace up to specified depth. */
   async repoMap(q: { dir?: string; depth?: number }): Promise<{ tree: string; truncated: boolean }> {
     try {
-      const targetDir = q.dir ? path.resolve(this.workspaceRoot, q.dir) : this.workspaceRoot;
+      const normalizedDir = q.dir ? q.dir.replace(/\\/g, '/') : undefined;
+      if (normalizedDir && /^[a-zA-Z]:/.test(normalizedDir) && process.platform !== 'win32') {
+        return { tree: '', truncated: false };
+      }
+      const targetDir = normalizedDir ? path.resolve(this.workspaceRoot, normalizedDir) : this.workspaceRoot;
       if (!isContainedInRoot(this.workspaceRoot, targetDir) || !fs.existsSync(targetDir)) {
         return { tree: '', truncated: false };
       }
@@ -129,9 +133,17 @@ export class FsUiHost implements UiHost {
       throw new Error('Path contains illegal null byte character');
     }
 
-    const resolved = path.isAbsolute(relPath)
-      ? path.resolve(relPath)
-      : path.resolve(this.workspaceRoot, relPath);
+    // Normalise backslashes to forward slashes at the start on all platforms
+    const normalized = relPath.replace(/\\/g, '/');
+
+    // Windows drive-letter path (e.g. C:\x or C:/x) on non-Windows platforms resolves outside workspace root
+    if (/^[a-zA-Z]:/.test(normalized) && process.platform !== 'win32') {
+      throw new Error(`Path '${relPath}' resolves outside workspace root ('${this.workspaceRoot}')`);
+    }
+
+    const resolved = path.isAbsolute(normalized)
+      ? path.resolve(normalized)
+      : path.resolve(this.workspaceRoot, normalized);
 
     if (!isContainedInRoot(this.workspaceRoot, resolved)) {
       throw new Error(`Path '${relPath}' resolves outside workspace root ('${this.workspaceRoot}')`);

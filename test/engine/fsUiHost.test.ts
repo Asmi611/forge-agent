@@ -168,6 +168,38 @@ describe('FsUiHost', () => {
       expect(content).toBe('nested content');
     });
 
+    it('normalises backslashes so sub\\nested.txt resolves to sub/nested.txt on all platforms', async () => {
+      const subDir = path.join(tempDir, 'sub');
+      fs.mkdirSync(subDir);
+      const filePath = path.join(subDir, 'nested.txt');
+      fs.writeFileSync(filePath, 'nested in sub', 'utf-8');
+
+      const host = new FsUiHost(tempDir);
+      const content = await host.readFile('sub\\nested.txt');
+      expect(content).toBe('nested in sub');
+    });
+
+    it('rejects ..\\outside.txt traversal on all platforms', async () => {
+      const host = new FsUiHost(tempDir);
+      await expect(host.readFile('..\\outside.txt')).rejects.toThrow(
+        'resolves outside workspace root'
+      );
+    });
+
+    it('rejects sub\\..\\..\\outside.txt traversal on all platforms', async () => {
+      const host = new FsUiHost(tempDir);
+      await expect(host.readFile('sub\\..\\..\\outside.txt')).rejects.toThrow(
+        'resolves outside workspace root'
+      );
+    });
+
+    it('rejects absolute Windows-style paths like C:\\x on all platforms', async () => {
+      const host = new FsUiHost(tempDir);
+      await expect(host.readFile('C:\\x')).rejects.toThrow(
+        'resolves outside workspace root'
+      );
+    });
+
     it('rejects paths that resolve outside the workspace root', async () => {
       const host = new FsUiHost(tempDir);
       await expect(host.readFile('../secret.txt')).rejects.toThrow(
@@ -251,6 +283,25 @@ describe('FsUiHost', () => {
       const snapshot = await host.snapshot('../external.txt');
       expect(snapshot.exists).toBe(false);
       expect(snapshot.contentHash).toBe('0'.repeat(64));
+    });
+
+    it('returns exists:false in snapshot for C:\\x on all platforms', async () => {
+      const host = new FsUiHost(tempDir);
+      const snap = await host.snapshot('C:\\x');
+      expect(snap.exists).toBe(false);
+      expect(snap.contentHash).toBe('0'.repeat(64));
+    });
+
+    it('normalises backslashes in snapshot path so sub\\nested.txt snapshots correctly', async () => {
+      const subDir = path.join(tempDir, 'subSnap');
+      fs.mkdirSync(subDir);
+      const filePath = path.join(subDir, 'nested.txt');
+      fs.writeFileSync(filePath, 'snap content', 'utf-8');
+
+      const host = new FsUiHost(tempDir);
+      const snap = await host.snapshot('subSnap\\nested.txt');
+      expect(snap.exists).toBe(true);
+      expect(snap.path).toBe('subSnap/nested.txt');
     });
   });
 
