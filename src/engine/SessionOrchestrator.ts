@@ -44,7 +44,6 @@ import {
   createFileInputSchema,
 } from '../mcp/tools/createFile.ts';
 import type { ToolExecutionContext, ToolCallResult } from '../mcp/limits.ts';
-import type { DecisionStore } from './ProposalStore.ts';
 import type { z } from 'zod';
 
 /**
@@ -95,7 +94,6 @@ export class SessionOrchestrator implements EngineApi {
   private runEpoch = 0;
   private activeProfile: 'primary' | 'fallback';
   private lastRunAnyHunkApplied = false;
-  private lastDecisionStore: DecisionStore | null = null;
   private readonly host: UiHost;
   private readonly client: ForgeClient;
   private readonly config: EngineConfig;
@@ -175,11 +173,23 @@ export class SessionOrchestrator implements EngineApi {
   } {
     return {
       proposeEdit: async (args, ctx) => {
-        const store = this.activeContext?.approvalBridge.getDecisionStore() ?? this.lastDecisionStore ?? undefined;
+        const store = this.activeContext?.approvalBridge.getDecisionStore();
+        if (!store) {
+          return {
+            content: [{ type: 'text', text: 'no active run' }],
+            isError: true,
+          };
+        }
         return handleProposeEdit(args, ctx, store);
       },
       createFile: async (args, ctx) => {
-        const store = this.activeContext?.approvalBridge.getDecisionStore() ?? this.lastDecisionStore ?? undefined;
+        const store = this.activeContext?.approvalBridge.getDecisionStore();
+        if (!store) {
+          return {
+            content: [{ type: 'text', text: 'no active run' }],
+            isError: true,
+          };
+        }
         return handleCreateFile(args, ctx, store);
       },
     };
@@ -685,7 +695,6 @@ export class SessionOrchestrator implements EngineApi {
 
     if (this.activeContext === ctx) {
       this.lastRunAnyHunkApplied = ctx.approvalBridge.anyHunkApplied;
-      this.lastDecisionStore = ctx.approvalBridge.getDecisionStore();
       this.activeContext = null;
     }
 

@@ -15,3 +15,27 @@
 | `enableTools` / `disableTools` | all eight tools / none | keep the tool surface small and known |
 | `preloadTools` | only if deferral is chosen as the B4 feature: preload the core tools, defer `runCommand`/`createFile` | docs/00 ADR-13 |
 Never send the inbound item `user.tool_approval_policy` (would skip review, docs/03 T13).
+
+## Developer 2 Integration: MCP Tool Server Lifecycle
+
+```typescript
+import { createEngine, startToolServer, type ProposalHandlerProvider } from './src/engine/index.ts';
+
+// 1. Create engine and start in-process tool server on loopback
+const engine = createEngine(host, { forgeDir: './forge' });
+const toolServer = await startToolServer({
+  host,
+  client, // registers actual bound URL + token with TrueForge
+  proposalProvider: engine as ProposalHandlerProvider,
+});
+
+try {
+  // 2. Run agent; proposals resolve dynamically against active run store
+  for await (const event of engine.runAgent({ prompt, mentions: [] })) {
+    // Secret token is never logged or leaked into engine events
+  }
+} finally {
+  // 3. Clean teardown: releases port and destroys active sockets (idempotent)
+  await toolServer.stop();
+}
+```

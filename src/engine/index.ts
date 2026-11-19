@@ -73,3 +73,11 @@ export {
   type EngineLogger,
   type OrchestratorOptions,
 };
+
+export {
+  startToolServer,
+  type StartToolServerOptions,
+  type ToolServerHandle,
+  type ProposalHandlerProvider,
+  type ToolServerLogger,
+} from '../mcp/startToolServer.ts';

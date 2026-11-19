@@ -422,6 +422,9 @@ describe('ApprovalBridge and Turn Resumption (Milestone E-06)', () => {
     const orchestrator = new SessionOrchestrator(host, client, config);
     let capturedProposalId = '';
 
+    const handlers = orchestrator.getProposalHandlers();
+    let activeResultText = '';
+
     const runPromise = (async () => {
       for await (const ev of orchestrator.runAgent({ prompt: 'edit', mentions: [] })) {
         if (ev.type === 'proposal.created') {
@@ -439,6 +442,19 @@ describe('ApprovalBridge and Turn Resumption (Milestone E-06)', () => {
               },
             ],
           });
+          // Verify DecisionStore contains rejected hunk details during active run
+          const activeResult = await handlers.proposeEdit(
+            {
+              path: 'src/file.ts',
+              edits: [
+                { oldText: 'line 1', newText: 'line 1 modified' },
+                { oldText: 'line 3', newText: 'line 3 modified' },
+              ],
+              rationale: 'partial edit',
+            },
+            { host, callOptions: { toolCallId: 'call_edit_3' } } as any
+          );
+          activeResultText = activeResult.content[0].text;
         }
       }
     })();
@@ -460,10 +476,10 @@ describe('ApprovalBridge and Turn Resumption (Milestone E-06)', () => {
     );
 
     expect(orchestrator.anyHunkApplied).toBe(true);
+    expect(activeResultText).toContain('Applied 1 of 2 hunks to src/file.ts (rejected: 1)');
 
-    // Verify DecisionStore contains rejected hunk details
-    const handlers = orchestrator.getProposalHandlers();
-    const result = await handlers.proposeEdit(
+    // Verify after run completion that proposeEdit returns 'no active run'
+    const postRunResult = await handlers.proposeEdit(
       {
         path: 'src/file.ts',
         edits: [
@@ -474,8 +490,8 @@ describe('ApprovalBridge and Turn Resumption (Milestone E-06)', () => {
       },
       { host, callOptions: { toolCallId: 'call_edit_3' } } as any
     );
-
-    expect(result.content[0].text).toContain('Applied 1 of 2 hunks to src/file.ts (rejected: 1)');
+    expect(postRunResult.content[0].text).toBe('no active run');
+    expect(postRunResult.isError).toBe(true);
   });
 
   it('stale failure: submitApprovals called with deny and stale message', async () => {
@@ -1075,6 +1091,9 @@ describe('ApprovalBridge and Turn Resumption (Milestone E-06)', () => {
 
     const orchestrator = new SessionOrchestrator(host, client, config);
 
+    const handlers = orchestrator.getProposalHandlers();
+    let activeResultText = '';
+
     const runPromise = (async () => {
       for await (const ev of orchestrator.runAgent({ prompt: 'test', mentions: [] })) {
         if (ev.type === 'review.required') {
@@ -1089,15 +1108,28 @@ describe('ApprovalBridge and Turn Resumption (Milestone E-06)', () => {
               },
             ],
           });
+          // During the active run, call handlers.proposeEdit and verify truthful sentence matches docs/01 §4.1
+          const activeResult = await handlers.proposeEdit(
+            {
+              path: 'src/sample.ts',
+              edits: [{ oldText: 'alpha', newText: 'gamma' }],
+              rationale: 'update alpha',
+            },
+            { host, callOptions: { toolCallId: 'call_shared_1' } } as any
+          );
+          activeResultText = activeResult.content[0].text;
         }
       }
     })();
 
     await runPromise;
 
-    // Call orchestrator.getProposalHandlers() and verify truthful sentence matches docs/01 §4.1
-    const handlers = orchestrator.getProposalHandlers();
-    const result = await handlers.proposeEdit(
+    expect(activeResultText).toBe(
+      'Applied 1 of 1 hunks to src/sample.ts. The file on disk now contains only the accepted hunks. Re-read before editing again.'
+    );
+
+    // After run completion, verify proposeEdit returns 'no active run'
+    const postRunResult = await handlers.proposeEdit(
       {
         path: 'src/sample.ts',
         edits: [{ oldText: 'alpha', newText: 'gamma' }],
@@ -1106,9 +1138,8 @@ describe('ApprovalBridge and Turn Resumption (Milestone E-06)', () => {
       { host, callOptions: { toolCallId: 'call_shared_1' } } as any
     );
 
-    expect(result.content[0].text).toBe(
-      'Applied 1 of 1 hunks to src/sample.ts. The file on disk now contains only the accepted hunks. Re-read before editing again.'
-    );
+    expect(postRunResult.content[0].text).toBe('no active run');
+    expect(postRunResult.isError).toBe(true);
   });
 
   it('cancel while awaiting review: proposals discarded with reason cancelled, no submitApprovals, run.cancelled emitted', async () => {
