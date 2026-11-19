@@ -34,6 +34,18 @@ import {
   type EventMapperState,
 } from './eventMapper.ts';
 import { SingleConsumerEventQueue } from './eventQueue.ts';
+import { ApprovalBridge, type PauseResolution } from './approvalBridge.ts';
+import {
+  handleProposeEdit,
+  proposeEditInputSchema,
+} from '../mcp/tools/proposeEdit.ts';
+import {
+  handleCreateFile,
+  createFileInputSchema,
+} from '../mcp/tools/createFile.ts';
+import type { ToolExecutionContext, ToolCallResult } from '../mcp/limits.ts';
+import type { DecisionStore } from './ProposalStore.ts';
+import type { z } from 'zod';
 
 /**
  * Pluggable logger interface for SessionOrchestrator transitions and diagnostics.
@@ -72,6 +84,7 @@ interface RunContext {
   isConsumerTerminated: boolean;
   isFinalized: boolean;
   usedTokens: number;
+  approvalBridge: ApprovalBridge;
 }
 
 /**
@@ -81,6 +94,8 @@ export class SessionOrchestrator implements EngineApi {
   private activeContext: RunContext | null = null;
   private runEpoch = 0;
   private activeProfile: 'primary' | 'fallback';
+  private lastRunAnyHunkApplied = false;
+  private lastDecisionStore: DecisionStore | null = null;
   private readonly host: UiHost;
   private readonly client: ForgeClient;
   private readonly config: EngineConfig;
@@ -144,6 +159,33 @@ export class SessionOrchestrator implements EngineApi {
   }
 
   /**
+   * Returns whether any accepted hunk has been applied in the active run (or latest run).
+   */
+  public get anyHunkApplied(): boolean {
+    return this.activeContext?.approvalBridge.anyHunkApplied ?? this.lastRunAnyHunkApplied;
+  }
+
+  /**
+   * Returns proposeEdit and createFile handlers bound to the active run's DecisionStore.
+   * Pluggable hook for McpToolServer.setProposalHandlers().
+   */
+  public getProposalHandlers(): {
+    proposeEdit: (args: z.infer<typeof proposeEditInputSchema>, ctx: ToolExecutionContext) => Promise<ToolCallResult>;
+    createFile: (args: z.infer<typeof createFileInputSchema>, ctx: ToolExecutionContext) => Promise<ToolCallResult>;
+  } {
+    return {
+      proposeEdit: async (args, ctx) => {
+        const store = this.activeContext?.approvalBridge.getDecisionStore() ?? this.lastDecisionStore ?? undefined;
+        return handleProposeEdit(args, ctx, store);
+      },
+      createFile: async (args, ctx) => {
+        const store = this.activeContext?.approvalBridge.getDecisionStore() ?? this.lastDecisionStore ?? undefined;
+        return handleCreateFile(args, ctx, store);
+      },
+    };
+  }
+
+  /**
    * Cancels the active run immediately. Idempotent and returns fast.
    */
   public async cancel(): Promise<void> {
@@ -153,6 +195,9 @@ export class SessionOrchestrator implements EngineApi {
     }
 
     ctx.isCancelled = true;
+    if (ctx.approvalBridge) {
+      ctx.approvalBridge.cancel((ev) => ctx.queue.push(ev, ctx.epoch));
+    }
     this.runEpoch++;
     ctx.abortController.abort();
 
@@ -161,10 +206,15 @@ export class SessionOrchestrator implements EngineApi {
 
   /**
    * Acknowledges review completion for a pending proposal batch.
-   * Approval bridge functionality is deferred to milestone E-06.
+   * Resolves decisions in DecisionStore and unblocks the approval bridge.
    */
   public async reviewDone(result: ReviewResult): Promise<void> {
-    this.log('review:done_stub', { batchId: result.batchId });
+    if (!this.activeContext || this.activeContext.isFinalized || this.activeContext.isCancelled) {
+      this.log('review:done_ignored', { batchId: result.batchId, reason: 'no_active_run_or_cancelled' });
+      return;
+    }
+    this.log('review:done', { batchId: result.batchId });
+    this.activeContext.approvalBridge.reviewDone(result);
   }
 
   /**
@@ -224,6 +274,7 @@ export class SessionOrchestrator implements EngineApi {
                 isConsumerTerminated: false,
                 isFinalized: false,
                 usedTokens: 0,
+                approvalBridge: new ApprovalBridge(this.host),
               };
 
               this.activeContext = runContext;
@@ -338,143 +389,253 @@ export class SessionOrchestrator implements EngineApi {
 
       // 4. Stream turn events
       this.log('run:create_turn', { runId: ctx.runId, sessionId });
-      const turnStream = this.client.createTurn(
+      let turnStream: AsyncIterable<RawEvent> = this.client.createTurn(
         sessionId,
         input,
         ctx.abortController.signal
       );
 
       let terminalEncountered: TerminalEvent | null = null;
+      let currentTurnId = '';
+      let lastProcessedEventId: string | undefined = undefined;
+      let hasResumedFromPause = false;
 
-      for await (const raw of turnStream) {
-        if (ctx.isCancelled || ctx.abortController.signal.aborted) {
-          break;
-        }
+      while (!terminalEncountered && !ctx.isCancelled && !ctx.abortController.signal.aborted) {
+        for await (const raw of turnStream) {
+          if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+            break;
+          }
 
-        const mapResult = mapRawEvent(raw, ctx.mapperState);
-        for (const ev of mapResult.events) {
-          ctx.queue.push(ev, ctx.epoch);
-        }
+          // Track turnId and eventId from incoming raw event
+          const rawEvent = raw as RawEvent;
+          const rawData = isPlainObject(rawEvent.data)
+            ? (rawEvent.data as Record<string, unknown>)
+            : isPlainObject(raw)
+            ? (raw as Record<string, unknown>)
+            : null;
 
-        // 4a. Handle sequence gap at completion boundary: log and never treat discarded completion as successful
-        if (mapResult.gap) {
-          this.log('stream:sequence_gap', {
-            runId: ctx.runId,
-            expected: mapResult.gap.expected,
-            received: mapResult.gap.received,
-          });
-          terminalEncountered = {
-            type: 'run.failed',
-            error: {
-              kind: 'unknown',
-              message: `Sequence gap detected at completion boundary (expected ${mapResult.gap.expected}, received ${mapResult.gap.received})`,
-              retryable: false,
-            },
-          };
-          break;
-        }
+          const eventTurnId = typeof rawData?.turn_id === 'string'
+            ? rawData.turn_id
+            : typeof rawData?.turnId === 'string'
+            ? rawData.turnId
+            : undefined;
+          if (eventTurnId) {
+            currentTurnId = eventTurnId;
+          }
 
-        // 4b. Immediately detect newPauses: stop stream and emit E-03 approval-stub failure
-        if (mapResult.newPauses.length > 0) {
-          this.log('stream:new_pauses', { runId: ctx.runId, count: mapResult.newPauses.length });
-          terminalEncountered = {
-            type: 'run.failed',
-            error: {
-              kind: 'unknown',
-              message: 'Approval pause encountered; approval bridge deferred to milestone E-06',
-              retryable: false,
-            },
-          };
-          break;
-        }
+          const eventId = typeof rawData?.id === 'string'
+            ? rawData.id
+            : typeof rawEvent?.id === 'string'
+            ? rawEvent.id
+            : undefined;
+          if (eventId) {
+            lastProcessedEventId = eventId;
+          }
 
-        // 4c. Handle unresolvedPauses if present in mapper API
-        if (mapResult.unresolvedPauses && mapResult.unresolvedPauses.length > 0) {
-          this.log('stream:unresolved_pauses', { runId: ctx.runId, count: mapResult.unresolvedPauses.length });
-          terminalEncountered = {
-            type: 'run.failed',
-            error: {
-              kind: 'unknown',
-              message: `Unresolved approval pause correlation error: ${mapResult.unresolvedPauses.map((u) => u.reason).join('; ')}`,
-              retryable: false,
-            },
-          };
-          break;
-        }
+          const mapResult = mapRawEvent(raw, ctx.mapperState);
+          for (const ev of mapResult.events) {
+            ctx.queue.push(ev, ctx.epoch);
+          }
 
-        // 4d. Call mapTerminal() ONLY for actual terminal wire events (turn.update and turn.done)
-        const rawEvent = raw as RawEvent;
-        const rawData = isPlainObject(rawEvent.data)
-          ? rawEvent.data
-          : isPlainObject(raw)
-          ? (raw as Record<string, unknown>)
-          : null;
-        const eventType = rawData && typeof rawData.type === 'string' ? rawData.type : rawEvent.event;
-
-        if (eventType === 'turn.update' || eventType === 'turn.done') {
-          const terminal = mapTerminal(raw);
-
-          // Preserve pause precedence: explicit paused status OR done with non-empty requiredActions is a pause
-          const hasRequiredActions =
-            terminal.outcome === 'done' &&
-            Array.isArray(terminal.requiredActions) &&
-            terminal.requiredActions.length > 0;
-
-          if (terminal.outcome === 'paused' || hasRequiredActions) {
+          // 4a. Handle sequence gap at completion boundary: log and never treat discarded completion as successful
+          if (mapResult.gap) {
+            this.log('stream:sequence_gap', {
+              runId: ctx.runId,
+              expected: mapResult.gap.expected,
+              received: mapResult.gap.received,
+            });
             terminalEncountered = {
               type: 'run.failed',
               error: {
                 kind: 'unknown',
-                message: 'Approval pause encountered; approval bridge deferred to milestone E-06',
+                message: `Sequence gap detected at completion boundary (expected ${mapResult.gap.expected}, received ${mapResult.gap.received})`,
                 retryable: false,
               },
             };
             break;
-          } else if (terminal.outcome === 'error') {
+          }
+
+          // 4b. Coordinate approval pauses via ApprovalBridge (Milestone E-06)
+          if (mapResult.newPauses.length > 0) {
+            this.log('stream:new_pauses', { runId: ctx.runId, count: mapResult.newPauses.length });
+            const pauses = ctx.mapperState.consumePauses();
+            let pauseRes: PauseResolution;
+            try {
+              pauseRes = await ctx.approvalBridge.handlePause(
+                pauses,
+                sessionId,
+                currentTurnId,
+                ctx.abortController.signal,
+                (ev) => ctx.queue.push(ev, ctx.epoch)
+              );
+            } catch (err: unknown) {
+              if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+                return;
+              }
+              throw err;
+            }
+
+            if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+              return;
+            }
+
+            // Submit ALL pending approvals (pre-denied + human-reviewed) together in ONE resume call
+            try {
+              await this.client.submitApprovals(
+                sessionId,
+                currentTurnId,
+                pauseRes.approvals,
+                ctx.abortController.signal
+              );
+              hasResumedFromPause = true;
+            } catch (err: unknown) {
+              if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+                return;
+              }
+              const forgeError = this.classifyError(err);
+              terminalEncountered = { type: 'run.failed', error: forgeError };
+              break;
+            }
+          }
+
+          // 4c. Handle unresolvedPauses if present in mapper API
+          if (mapResult.unresolvedPauses && mapResult.unresolvedPauses.length > 0) {
+            this.log('stream:unresolved_pauses', { runId: ctx.runId, count: mapResult.unresolvedPauses.length });
             terminalEncountered = {
               type: 'run.failed',
               error: {
-                kind: 'model',
-                message: terminal.message,
+                kind: 'unknown',
+                message: `Unresolved approval pause correlation error: ${mapResult.unresolvedPauses.map((u) => u.reason).join('; ')}`,
                 retryable: false,
               },
             };
             break;
-          } else if (terminal.outcome === 'cancelled') {
-            terminalEncountered = { type: 'run.cancelled' };
-            break;
-          } else if (eventType === 'turn.done') {
-            if (terminal.outcome === 'done') {
-              // Check for unconsumed approval pauses at completion
+          }
+
+          // 4d. Call mapTerminal() ONLY for actual terminal wire events (turn.update and turn.done)
+          const eventType = rawData && typeof rawData.type === 'string' ? rawData.type : rawEvent.event;
+
+          if (eventType === 'turn.update' || eventType === 'turn.done') {
+            const terminal = mapTerminal(raw);
+
+            // Preserve pause precedence: explicit paused status OR done with non-empty requiredActions is a pause
+            const hasRequiredActions =
+              terminal.outcome === 'done' &&
+              Array.isArray(terminal.requiredActions) &&
+              terminal.requiredActions.length > 0;
+
+            if (terminal.outcome === 'paused' || hasRequiredActions) {
               if (ctx.mapperState.pauses.length > 0) {
+                this.log('stream:paused_terminal_with_pauses', { runId: ctx.runId, count: ctx.mapperState.pauses.length });
+                const pauses = ctx.mapperState.consumePauses();
+                let pauseRes: PauseResolution;
+                try {
+                  pauseRes = await ctx.approvalBridge.handlePause(
+                    pauses,
+                    sessionId,
+                    currentTurnId,
+                    ctx.abortController.signal,
+                    (ev) => ctx.queue.push(ev, ctx.epoch)
+                  );
+                } catch (err: unknown) {
+                  if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+                    return;
+                  }
+                  throw err;
+                }
+
+                if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+                  return;
+                }
+
+                try {
+                  await this.client.submitApprovals(
+                    sessionId,
+                    currentTurnId,
+                    pauseRes.approvals,
+                    ctx.abortController.signal
+                  );
+                  hasResumedFromPause = true;
+                } catch (err: unknown) {
+                  if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+                    return;
+                  }
+                  const forgeError = this.classifyError(err);
+                  terminalEncountered = { type: 'run.failed', error: forgeError };
+                  break;
+                }
+              }
+              // If pauses was empty, it was already handled by mapResult.newPauses: stream continues!
+            } else if (terminal.outcome === 'error') {
+              terminalEncountered = {
+                type: 'run.failed',
+                error: {
+                  kind: 'model',
+                  message: terminal.message,
+                  retryable: false,
+                },
+              };
+              break;
+            } else if (terminal.outcome === 'cancelled') {
+              terminalEncountered = { type: 'run.cancelled' };
+              break;
+            } else if (eventType === 'turn.done') {
+              if (terminal.outcome === 'done') {
+                // Check for unconsumed approval pauses at completion
+                if (ctx.mapperState.pauses.length > 0) {
+                  terminalEncountered = {
+                    type: 'run.failed',
+                    error: {
+                      kind: 'unknown',
+                      message: 'Turn completed with unresolved approval pauses',
+                      retryable: false,
+                    },
+                  };
+                  break;
+                }
+
+                const summary = this.extractSummary(terminal.output);
+                terminalEncountered = { type: 'run.completed', summary };
+                break;
+              } else if (terminal.outcome === 'non_terminal') {
+                // A non_terminal result on turn.done is a failure
                 terminalEncountered = {
                   type: 'run.failed',
                   error: {
                     kind: 'unknown',
-                    message: 'Turn completed with unresolved approval pauses (approval bridge milestone E-06)',
+                    message: `turn.done received with non-terminal status '${terminal.currentStatus ?? 'unknown'}'`,
                     retryable: false,
                   },
                 };
                 break;
               }
-
-              const summary = this.extractSummary(terminal.output);
-              terminalEncountered = { type: 'run.completed', summary };
-              break;
-            } else if (terminal.outcome === 'non_terminal') {
-              // A non_terminal result on turn.done is a failure
-              terminalEncountered = {
-                type: 'run.failed',
-                error: {
-                  kind: 'unknown',
-                  message: `turn.done received with non-terminal status '${terminal.currentStatus ?? 'unknown'}'`,
-                  retryable: false,
-                },
-              };
-              break;
             }
           }
-          // Note: turn.update without pause/error/cancel is an in-progress update; stream continues
+        }
+
+        if (terminalEncountered || ctx.isCancelled || ctx.abortController.signal.aborted) {
+          break;
+        }
+
+        // If the original SSE stream ended when the turn paused, reconnect with client.subscribeTurn
+        if (hasResumedFromPause && currentTurnId && lastProcessedEventId) {
+          hasResumedFromPause = false;
+          this.log('stream:reconnect_subscribe', {
+            runId: ctx.runId,
+            turnId: currentTurnId,
+            afterEventId: lastProcessedEventId,
+          });
+          turnStream = this.client.subscribeTurn(
+            sessionId,
+            currentTurnId,
+            {
+              afterEventId: lastProcessedEventId,
+              signal: ctx.abortController.signal,
+            }
+          );
+        } else {
+          // Stream ended without a terminal event and not resuming from pause
+          break;
         }
       }
 
@@ -523,6 +684,8 @@ export class SessionOrchestrator implements EngineApi {
     });
 
     if (this.activeContext === ctx) {
+      this.lastRunAnyHunkApplied = ctx.approvalBridge.anyHunkApplied;
+      this.lastDecisionStore = ctx.approvalBridge.getDecisionStore();
       this.activeContext = null;
     }
 
@@ -721,6 +884,13 @@ export class SessionOrchestrator implements EngineApi {
           kind: 'unreachable',
           message: 'Request timed out or connection was aborted',
           retryable: true,
+        };
+      }
+      if (err.message.includes('timed out') || err.message.includes('timeout')) {
+        return {
+          kind: 'timeout',
+          message: err.message,
+          retryable: false,
         };
       }
       return {

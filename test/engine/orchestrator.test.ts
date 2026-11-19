@@ -494,9 +494,32 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
     const client = new ForgeClient(config.setup);
 
     vi.spyOn(client, 'createSession').mockResolvedValue('session-turn-update-pause');
+    vi.spyOn(client, 'submitApprovals').mockResolvedValue({ eventIds: ['ev-allow'] });
+
     async function* mockTurn() {
       yield {
         id: '1',
+        event: 'message',
+        data: {
+          type: 'model.message.delta',
+          id: 'msg_prec',
+          finish_reason: 'tool_calls',
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call_prec',
+              type: 'function',
+              function: {
+                name: 'createFile',
+                arguments: JSON.stringify({ path: 'src/new.ts', content: 'new content', rationale: 'new' }),
+              },
+            },
+          ],
+        },
+        rawData: '',
+      } as RawEvent;
+      yield {
+        id: '2',
         event: 'message',
         data: {
           type: 'turn.update',
@@ -504,44 +527,113 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
         },
         rawData: '',
       } as RawEvent;
+      yield {
+        id: '3',
+        event: 'message',
+        data: {
+          type: 'tool.approval_required',
+          id: 'appr_prec',
+          thread_id: 'main',
+          tool_calls: [{ id: 'call_prec', source_event_id: 'msg_prec' }],
+        },
+        rawData: '',
+      } as RawEvent;
+      yield {
+        id: '4',
+        event: 'turn.done',
+        data: { type: 'turn.done', state: { status: 'done' } },
+        rawData: '',
+      } as RawEvent;
     }
     vi.spyOn(client, 'createTurn').mockImplementation(() => mockTurn());
 
     const orchestrator = new SessionOrchestrator(host, client, config);
     const events: EngineEvent[] = [];
-    for await (const ev of orchestrator.runAgent({ prompt: 'test', mentions: [] })) {
-      events.push(ev);
-    }
 
-    expect(events.length).toBe(3);
-    expect(events[0].type).toBe('run.started');
-    expect(events[1].type).toBe('budget');
-    expect(events[2]).toEqual({
-      type: 'run.failed',
-      error: {
-        kind: 'unknown',
-        message: 'Approval pause encountered; approval bridge deferred to milestone E-06',
-        retryable: false,
-      },
-    });
+    const runPromise = (async () => {
+      for await (const ev of orchestrator.runAgent({ prompt: 'test', mentions: [] })) {
+        events.push(ev);
+        if (ev.type === 'review.required') {
+          await orchestrator.reviewDone({
+            batchId: ev.batchId,
+            proposals: [
+              {
+                proposalId: ev.proposalIds[0],
+                decisions: { '0': 'accepted' },
+                applied: true,
+              },
+            ],
+          });
+        }
+      }
+    })();
+
+    await runPromise;
+
+    expect(events.some((e) => e.type === 'proposal.created')).toBe(true);
+    expect(events.some((e) => e.type === 'review.required')).toBe(true);
+    expect(events[events.length - 1].type).toBe('run.completed');
   });
 
-  it('done outcome with non-empty requiredActions on turn.done is treated as pause failure', async () => {
+  it('done outcome with non-empty requiredActions on turn.done is treated as pause', async () => {
     const config = createMockConfig();
     const host = createMockHost();
     const client = new ForgeClient(config.setup);
 
     vi.spyOn(client, 'createSession').mockResolvedValue('session-req-actions');
+    vi.spyOn(client, 'submitApprovals').mockResolvedValue({ eventIds: ['ev-req'] });
+
     async function* turnWithReqActions() {
       yield {
         id: '1',
+        event: 'message',
+        data: {
+          type: 'model.message.delta',
+          id: 'msg_req',
+          finish_reason: 'tool_calls',
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call_req',
+              type: 'function',
+              function: {
+                name: 'createFile',
+                arguments: JSON.stringify({ path: 'src/done_pause.ts', content: 'test', rationale: 'test' }),
+              },
+            },
+          ],
+        },
+        rawData: '',
+      } as RawEvent;
+      yield {
+        id: '2',
+        event: 'message',
+        data: {
+          type: 'tool.approval_required',
+          id: 'appr_req',
+          thread_id: 'main',
+          tool_calls: [{ id: 'call_req', source_event_id: 'msg_req' }],
+        },
+        rawData: '',
+      } as RawEvent;
+      yield {
+        id: '3',
         event: 'turn.done',
         data: {
           type: 'turn.done',
           state: {
             status: 'done',
-            required_actions: [{ type: 'approval', tool_call_id: 'call-1' }],
+            required_actions: [{ type: 'approval', tool_call_id: 'call_req' }],
           },
+        },
+        rawData: '',
+      } as RawEvent;
+      yield {
+        id: '4',
+        event: 'turn.done',
+        data: {
+          type: 'turn.done',
+          state: { status: 'done' },
         },
         rawData: '',
       } as RawEvent;
@@ -550,21 +642,30 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
 
     const orchestrator = new SessionOrchestrator(host, client, config);
     const events: EngineEvent[] = [];
-    for await (const ev of orchestrator.runAgent({ prompt: 'p', mentions: [] })) {
-      events.push(ev);
-    }
 
-    expect(events.length).toBe(3);
-    expect(events[0].type).toBe('run.started');
-    expect(events[1].type).toBe('budget');
-    expect(events[2]).toEqual({
-      type: 'run.failed',
-      error: {
-        kind: 'unknown',
-        message: 'Approval pause encountered; approval bridge deferred to milestone E-06',
-        retryable: false,
-      },
-    });
+    const runPromise = (async () => {
+      for await (const ev of orchestrator.runAgent({ prompt: 'p', mentions: [] })) {
+        events.push(ev);
+        if (ev.type === 'review.required') {
+          await orchestrator.reviewDone({
+            batchId: ev.batchId,
+            proposals: [
+              {
+                proposalId: ev.proposalIds[0],
+                decisions: { '0': 'accepted' },
+                applied: true,
+              },
+            ],
+          });
+        }
+      }
+    })();
+
+    await runPromise;
+
+    expect(events.some((e) => e.type === 'proposal.created')).toBe(true);
+    expect(events.some((e) => e.type === 'review.required')).toBe(true);
+    expect(events[events.length - 1].type).toBe('run.completed');
   });
 
   it('non_terminal outcome on turn.done produces failure', async () => {
@@ -605,12 +706,14 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
     });
   });
 
-  it('detects mapRawEvent newPauses immediately and terminates stream', async () => {
+  it('detects mapRawEvent newPauses immediately and handles approval pause via ApprovalBridge', async () => {
     const config = createMockConfig();
     const host = createMockHost();
     const client = new ForgeClient(config.setup);
 
     vi.spyOn(client, 'createSession').mockResolvedValue('session-pause');
+    vi.spyOn(client, 'submitApprovals').mockResolvedValue({ eventIds: ['ev_res'] });
+
     async function* turnWithPause() {
       yield {
         id: '1',
@@ -624,7 +727,10 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
               index: 0,
               id: 'call_1',
               type: 'function',
-              function: { name: 'proposeEdit', arguments: '{}' },
+              function: {
+                name: 'createFile',
+                arguments: JSON.stringify({ path: 'src/file.ts', content: 'new file', rationale: 'init' }),
+              },
             },
           ],
         },
@@ -641,27 +747,41 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
         },
         rawData: '',
       } as RawEvent;
+      yield {
+        id: '3',
+        event: 'turn.done',
+        data: { type: 'turn.done', state: { status: 'done' } },
+        rawData: '',
+      } as RawEvent;
     }
     vi.spyOn(client, 'createTurn').mockImplementation(() => turnWithPause());
 
     const orchestrator = new SessionOrchestrator(host, client, config);
     const events: EngineEvent[] = [];
-    for await (const ev of orchestrator.runAgent({ prompt: 'p', mentions: [] })) {
-      events.push(ev);
-    }
 
-    expect(events.length).toBe(4);
-    expect(events[0].type).toBe('run.started');
-    expect(events[1].type).toBe('budget');
-    expect(events[2].type).toBe('tool.call');
-    expect(events[3]).toEqual({
-      type: 'run.failed',
-      error: {
-        kind: 'unknown',
-        message: 'Approval pause encountered; approval bridge deferred to milestone E-06',
-        retryable: false,
-      },
-    });
+    const runPromise = (async () => {
+      for await (const ev of orchestrator.runAgent({ prompt: 'p', mentions: [] })) {
+        events.push(ev);
+        if (ev.type === 'review.required') {
+          await orchestrator.reviewDone({
+            batchId: ev.batchId,
+            proposals: [
+              {
+                proposalId: ev.proposalIds[0],
+                decisions: { '0': 'accepted' },
+                applied: true,
+              },
+            ],
+          });
+        }
+      }
+    })();
+
+    await runPromise;
+
+    expect(events.some((e) => e.type === 'proposal.created')).toBe(true);
+    expect(events.some((e) => e.type === 'review.required')).toBe(true);
+    expect(events[events.length - 1].type).toBe('run.completed');
   });
 
   it('sequence gap at completion boundary is logged and fails, never treated as success', async () => {
