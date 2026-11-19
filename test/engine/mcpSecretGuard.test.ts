@@ -309,16 +309,18 @@ describe('mcp secretGuard and path security', () => {
     });
 
     it('redacts OpenAI/Anthropic sk-... API key patterns', () => {
-      const text = 'const key = "sk-1234567890abcdef1234567890abcdef";';
+      const fakeSk = 'sk-' + '1234567890abcdef1234567890abcdef';
+      const text = `const key = "${fakeSk}";`;
       const redacted = redactSecrets(text);
-      expect(redacted).not.toContain('sk-1234567890abcdef1234567890abcdef');
+      expect(redacted).not.toContain(fakeSk);
       expect(redacted).toContain('[REDACTED_API_KEY]');
     });
 
     it('redacts Google AIza... API key patterns', () => {
-      const text = 'const googleKey = "AIzaSyD-1234567890abcdef1234567890abc";';
+      const fakeGoogleKey = 'AIza' + 'SyD-1234567890abcdef1234567890abc';
+      const text = `const googleKey = "${fakeGoogleKey}";`;
       const redacted = redactSecrets(text);
-      expect(redacted).not.toContain('AIzaSyD-1234567890abcdef1234567890abc');
+      expect(redacted).not.toContain(fakeGoogleKey);
       expect(redacted).toContain('[REDACTED_API_KEY]');
     });
 

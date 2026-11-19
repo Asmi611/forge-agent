@@ -170,6 +170,7 @@ describe('MCP Read Tools Handlers', () => {
 
   describe('searchWorkspace', () => {
     it('returns formatted search hits with preview length limits and secret redaction', async () => {
+      const fakeKey = 'sk-' + '1234567890abcdef1234567890';
       const host = createTestHost({
         context: {
           resolveMention: async () => null,
@@ -179,7 +180,7 @@ describe('MCP Read Tools Handlers', () => {
               {
                 path: 'src/main.ts',
                 line: 1,
-                preview: 'const apiKey = "sk-1234567890abcdef1234567890"; // secret',
+                preview: `const apiKey = "${fakeKey}"; // secret`,
               },
             ],
             omitted: 0,
@@ -193,7 +194,7 @@ describe('MCP Read Tools Handlers', () => {
       expect(result.isError).toBeFalsy();
       expect(result.content[0].text).toContain('src/main.ts:1:');
       // Verify redaction
-      expect(result.content[0].text).not.toContain('sk-1234567890abcdef1234567890');
+      expect(result.content[0].text).not.toContain(fakeKey);
       expect(result.content[0].text).toContain('[REDACTED_API_KEY]');
     });
 
