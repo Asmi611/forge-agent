@@ -5,11 +5,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as net from 'node:net';
 import * as path from 'node:path';
-import type { UiHost } from '../../src/types/contract.ts';
+import type { UiHost, EngineApi, EngineEvent } from '../../src/types/contract.ts';
 import {
   startToolServer,
   type ToolServerHandle,
 } from '../../src/mcp/startToolServer.ts';
+import type { McpToolServer } from '../../src/mcp/McpToolServer.ts';
 import { ForgeClient, type RawEvent } from '../../src/engine/ForgeClient.ts';
 import { SessionOrchestrator } from '../../src/engine/SessionOrchestrator.ts';
 import type { EngineConfig } from '../../src/engine/config.ts';
@@ -428,6 +429,18 @@ describe('startToolServer helper', () => {
   });
 });
 
+/** Minimal fully typed EngineApi stub for CLI lifecycle tests without any. */
+function createStubEngine(runAgentFn: () => AsyncGenerator<EngineEvent, void, undefined>): EngineApi {
+  return {
+    runInline: () => (async function* () {})(),
+    runAgent: runAgentFn,
+    cancel: async () => {},
+    reviewDone: async () => {},
+    switchModel: async () => {},
+    activeModel: () => 'primary-model-id',
+  };
+}
+
 describe('scripts/engine-cli with tool server lifecycle', () => {
   it('starts tool server before run and stops it cleanly in finally on completion', async () => {
     let serverStarted = false;
@@ -438,23 +451,32 @@ describe('scripts/engine-cli with tool server lifecycle', () => {
       return {
         url: 'http://127.0.0.1:8792/mcp',
         token: 'test-cli-token',
-        server: {} as any,
+        // Mock McpToolServer instance stub for CLI lifecycle testing
+        server: { isRunning: true, port: 8792 } as unknown as McpToolServer,
         stop: async () => {
           serverStopped = true;
         },
       };
     };
 
+    const config = createMockConfig();
+    const host = createMockHost();
+    const client = new ForgeClient(config.setup);
     const stdoutLines: string[] = [];
+
+    const mockEngine = createStubEngine(async function* () {
+      expect(serverStarted).toBe(true);
+      expect(serverStopped).toBe(false);
+      yield { type: 'run.completed' } satisfies EngineEvent;
+    });
+
     const code = await runCli(['--forgeDir', 'forge', 'test cli run'], {
+      config,
+      host,
+      client,
+      healthCheck: async () => ({ ok: true }),
       startToolServer: mockStartToolServer,
-      engine: {
-        runAgent: () => (async function* () {
-          expect(serverStarted).toBe(true);
-          expect(serverStopped).toBe(false);
-          yield { type: 'run.completed', appliedHunkCount: 0 } as any;
-        })(),
-      } as any,
+      engine: mockEngine,
       stdout: (m) => stdoutLines.push(m),
     });
 
@@ -472,21 +494,30 @@ describe('scripts/engine-cli with tool server lifecycle', () => {
       return {
         url: 'http://127.0.0.1:8792/mcp',
         token: 'test-cli-token',
-        server: {} as any,
+        // Mock McpToolServer instance stub for CLI lifecycle testing
+        server: { isRunning: true, port: 8792 } as unknown as McpToolServer,
         stop: async () => {
           serverStopped = true;
         },
       };
     };
 
+    const config = createMockConfig();
+    const host = createMockHost();
+    const client = new ForgeClient(config.setup);
     const stderrLines: string[] = [];
+
+    const mockEngine = createStubEngine(async function* () {
+      throw new Error('Fatal stream explosion');
+    });
+
     const code = await runCli(['--forgeDir', 'forge', 'failing run'], {
+      config,
+      host,
+      client,
+      healthCheck: async () => ({ ok: true }),
       startToolServer: mockStartToolServer,
-      engine: {
-        runAgent: () => (async function* () {
-          throw new Error('Fatal stream explosion');
-        })(),
-      } as any,
+      engine: mockEngine,
       stderr: (m) => stderrLines.push(m),
     });
 
@@ -504,20 +535,29 @@ describe('scripts/engine-cli with tool server lifecycle', () => {
       return {
         url: 'http://127.0.0.1:8792/mcp',
         token: 'test-cli-token',
-        server: {} as any,
+        // Mock McpToolServer instance stub for CLI lifecycle testing
+        server: { isRunning: true, port: 8792 } as unknown as McpToolServer,
         stop: async () => {},
       };
     };
 
+    const config = createMockConfig();
+    const host = createMockHost();
+    const client = new ForgeClient(config.setup);
     const stdoutLines: string[] = [];
+
+    const mockEngine = createStubEngine(async function* () {
+      yield { type: 'run.completed' } satisfies EngineEvent;
+    });
+
     const code = await runCli(['--forgeDir', 'forge', 'skip test'], {
+      config,
+      host,
+      client,
+      healthCheck: async () => ({ ok: true }),
       skipToolServer: true,
       startToolServer: mockStartToolServer,
-      engine: {
-        runAgent: () => (async function* () {
-          yield { type: 'run.completed', appliedHunkCount: 0 } as any;
-        })(),
-      } as any,
+      engine: mockEngine,
       stdout: (m) => stdoutLines.push(m),
     });
 
