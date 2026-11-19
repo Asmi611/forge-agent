@@ -185,6 +185,54 @@ describe('Config Loader & Security Validator', () => {
     expect(check.rejected).toBe(true);
   });
 
+  it('validateSetupConfig accepts optional mcp.token and throws ConfigError if empty string', () => {
+    const validConfig = {
+      baseUrl: 'http://127.0.0.1:8790',
+      agents: { primary: 'p', fallback: 'f' },
+      mcp: { name: 'm', perWorkspace: false, port: 8792, path: '/mcp', token: 'valid-token' },
+      budgets: { seedTokens: 1, mentionsTokens: 1, runToolBudgetTokens: 1, maxToolCalls: 1, maxRunSeconds: 1 },
+      retry: { max: 1, baseDelayMs: 1 },
+    };
+    expect(() => validateSetupConfig(validConfig, 'test.json')).not.toThrow();
+
+    const emptyTokenConfig = {
+      ...validConfig,
+      mcp: { ...validConfig.mcp, token: '   ' },
+    };
+    expect(() => validateSetupConfig(emptyTokenConfig, 'test.json')).toThrow(ConfigError);
+    expect(() => validateSetupConfig(emptyTokenConfig, 'test.json')).toThrow(/'mcp.token' must be a non-empty string/);
+  });
+
+  it('loadConfig merges persistent mcp.token from setup.local.json preserving other keys', () => {
+    const tmpForgeDir = path.resolve(process.cwd(), 'node_modules/.tmp-config-token-test');
+    fs.mkdirSync(tmpForgeDir, { recursive: true });
+
+    try {
+      // Copy example files into temp forge directory
+      const baseSetup = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'forge/setup.example.json'), 'utf-8'));
+      const baseModels = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'forge/models.example.json'), 'utf-8'));
+      fs.writeFileSync(path.resolve(tmpForgeDir, 'setup.example.json'), JSON.stringify(baseSetup, null, 2));
+      fs.writeFileSync(path.resolve(tmpForgeDir, 'models.example.json'), JSON.stringify(baseModels, null, 2));
+
+      // Simulate setup persisting a generated 32-byte hex token and unrelated custom setting
+      const generatedToken = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
+      const localSetup = {
+        custom_unrelated_setting: 'preserve_me',
+        mcp: {
+          token: generatedToken,
+        },
+      };
+      fs.writeFileSync(path.resolve(tmpForgeDir, 'setup.local.json'), JSON.stringify(localSetup, null, 2));
+
+      const loaded = loadConfig({ forgeDir: tmpForgeDir, workspaceRoot: process.cwd() });
+      expect(loaded.setup.mcp.token).toBe(generatedToken);
+      expect((loaded.setup as unknown as Record<string, unknown>).custom_unrelated_setting).toBe('preserve_me');
+      expect(loaded.setup.baseUrl).toBe(baseSetup.baseUrl);
+    } finally {
+      fs.rmSync(tmpForgeDir, { recursive: true, force: true });
+    }
+  });
+
   it('throws ConfigError when canonical agent instructions or spec are missing or invalid', () => {
     const tmpDir = path.resolve(process.cwd(), 'node_modules/.tmp-canonical-test');
     fs.mkdirSync(tmpDir, { recursive: true });
@@ -881,101 +929,135 @@ describe('Approvals Resumption & Reconnection Protocol', () => {
   });
 });
 
-describe('MCP Registration & Agent Ownership Safety', () => {
-  it('registerMcp reuses connector when parameters and token match exactly', async () => {
+describe('MCP Registration & Connector Synchronization', () => {
+  it('registerMcp sends PUT /api/v1/settings/mcp-servers with correct manifest payload and returns reused: true', async () => {
     const originalFetch = global.fetch;
     const client = new ForgeClient(dummySetup);
+    let capturedMethod = '';
+    let capturedUrl = '';
+    let capturedBody: Record<string, unknown> | null = null;
 
     global.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
-      if (init?.method === 'POST') {
-        return createMockResponse(409, { message: 'Conflict' });
+      capturedMethod = init?.method ?? '';
+      capturedUrl = url;
+      if (typeof init?.body === 'string') {
+        capturedBody = JSON.parse(init.body);
       }
-      if (init?.method === 'GET' && url.includes('/settings/mcp-servers')) {
-        return createMockResponse(200, {
-          data: [{
-            name: 'forge-editor',
-            manifest: {
-              url: 'http://127.0.0.1:8792/mcp',
-              auth: { type: 'header', headers: { 'x-forge-token': 'token123' } },
-            },
-          }],
-        });
-      }
-      return createMockResponse(404, {});
+      return createMockResponse(200, { status: 'ok' });
     });
 
     const res = await client.registerMcp({
       name: 'forge-editor',
       url: 'http://127.0.0.1:8792/mcp',
-      token: 'token123',
+      token: 'persistent-token-12345',
     });
 
+    expect(capturedMethod).toBe('PUT');
+    expect(capturedUrl).toContain('/api/v1/settings/mcp-servers');
+    expect(capturedBody).toEqual({
+      manifest: {
+        type: 'remote',
+        name: 'forge-editor',
+        description: 'Forge Editor tools (read-only queries + proposal handlers)',
+        url: 'http://127.0.0.1:8792/mcp',
+        auth: {
+          type: 'header',
+          headers: { 'x-forge-token': 'persistent-token-12345' },
+        },
+      },
+    });
+    expect(res).toEqual({ ok: true, reused: true });
+
+    global.fetch = originalFetch;
+  });
+
+  it('registerMcp updates existing connector in place via PUT without relying on masked token comparison', async () => {
+    const originalFetch = global.fetch;
+    const client = new ForgeClient(dummySetup);
+
+    // TrueForge PUT updates in place and returns 200/204
+    global.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      expect(init?.method).toBe('PUT');
+      return createMockResponse(200, {
+        id: 'conn_1',
+        name: 'forge-editor',
+        manifest: {
+          url: 'http://127.0.0.1:8792/mcp',
+          auth: { type: 'header', headers: { 'x-forge-token': 'for-***REDACTED***-ken' } },
+        },
+      });
+    });
+
+    const res = await client.registerMcp({
+      name: 'forge-editor',
+      url: 'http://127.0.0.1:8792/mcp',
+      token: 'new-updated-token-999',
+    });
+
+    expect(res.ok).toBe(true);
     expect(res.reused).toBe(true);
-    global.fetch = originalFetch;
-  });
-
-  it('registerMcp throws error when existing connector has conflicting URL', async () => {
-    const originalFetch = global.fetch;
-    const client = new ForgeClient(dummySetup);
-
-    global.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
-      if (init?.method === 'POST') {
-        return createMockResponse(409, { message: 'Conflict' });
-      }
-      if (init?.method === 'GET') {
-        return createMockResponse(200, {
-          data: [{
-            name: 'forge-editor',
-            manifest: {
-              url: 'http://127.0.0.1:9999/different-mcp',
-              auth: { type: 'header', headers: { 'x-forge-token': 'token123' } },
-            },
-          }],
-        });
-      }
-      return createMockResponse(404, {});
-    });
-
-    await expect(
-      client.registerMcp({
-        name: 'forge-editor',
-        url: 'http://127.0.0.1:8792/mcp',
-        token: 'token123',
-      })
-    ).rejects.toThrow(/existing connector 'forge-editor' differs/);
 
     global.fetch = originalFetch;
   });
 
-  it('registerMcp throws error when existing connector has a different token', async () => {
+  it('registerMcp redacts secret token from error message when TrueForge returns HTTP 500 error', async () => {
     const originalFetch = global.fetch;
     const client = new ForgeClient(dummySetup);
+    const secretToken = 'unshared-secret-token-abcdef123456';
 
-    global.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
-      if (init?.method === 'POST') {
-        return createMockResponse(409, { message: 'Conflict' });
-      }
-      if (init?.method === 'GET') {
-        return createMockResponse(200, {
-          data: [{
-            name: 'forge-editor',
-            manifest: {
-              url: 'http://127.0.0.1:8792/mcp',
-              auth: { type: 'header', headers: { 'x-forge-token': 'different-token-456' } },
-            },
-          }],
-        });
-      }
-      return createMockResponse(404, {});
+    global.fetch = vi.fn().mockImplementation(async () => {
+      return createMockResponse(500, {
+        error: `Internal server failure while storing header x-forge-token ${secretToken}`,
+      });
     });
 
-    await expect(
-      client.registerMcp({
+    let caughtError: HttpError | null = null;
+    try {
+      await client.registerMcp({
         name: 'forge-editor',
         url: 'http://127.0.0.1:8792/mcp',
-        token: 'token123',
-      })
-    ).rejects.toThrow(/token: mismatch/);
+        token: secretToken,
+      });
+    } catch (err: unknown) {
+      caughtError = err as HttpError;
+    }
+
+    expect(caughtError).not.toBeNull();
+    expect(caughtError!.status).toBe(500);
+    expect(caughtError!.message).toContain('[REDACTED]');
+    expect(caughtError!.message).not.toContain(secretToken);
+    expect(JSON.stringify(caughtError!.body)).toContain('[REDACTED]');
+    expect(JSON.stringify(caughtError!.body)).not.toContain(secretToken);
+
+    global.fetch = originalFetch;
+  });
+
+  it('registerMcp handles 400 Bad Request safely with redacted token in error', async () => {
+    const originalFetch = global.fetch;
+    const client = new ForgeClient(dummySetup);
+    const secretToken = 'another-bad-request-secret-token';
+
+    global.fetch = vi.fn().mockImplementation(async () => {
+      return createMockResponse(400, {
+        detail: `Invalid manifest format for token: ${secretToken}`,
+      });
+    });
+
+    let caughtError: HttpError | null = null;
+    try {
+      await client.registerMcp({
+        name: 'forge-editor',
+        url: 'http://127.0.0.1:8792/mcp',
+        token: secretToken,
+      });
+    } catch (err: unknown) {
+      caughtError = err as HttpError;
+    }
+
+    expect(caughtError).not.toBeNull();
+    expect(caughtError!.status).toBe(400);
+    expect(caughtError!.message).toContain('[REDACTED]');
+    expect(caughtError!.message).not.toContain(secretToken);
 
     global.fetch = originalFetch;
   });

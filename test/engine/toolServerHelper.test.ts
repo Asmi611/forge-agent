@@ -70,6 +70,7 @@ function createMockConfig(): EngineConfig {
         port: 8880,
         path: '/mcp',
         perWorkspace: false,
+        token: 'configured-mock-token-999',
       },
       budgets: {
         seedTokens: 1000,
@@ -120,23 +121,65 @@ describe('startToolServer helper', () => {
     }
   });
 
-  it('starts on 127.0.0.1, generates 64-char hex token, and returns valid handle', async () => {
+  it('throws descriptive error instructing to run forge:setup when no token is available', async () => {
+    const originalEnv = process.env.FORGE_MCP_TOKEN;
+    delete process.env.FORGE_MCP_TOKEN;
+    try {
+      const host = createMockHost();
+      await expect(startToolServer({ host, port: 8881 })).rejects.toThrow(
+        /No MCP authentication token available\. Please run setup first/
+      );
+    } finally {
+      if (originalEnv !== undefined) {
+        process.env.FORGE_MCP_TOKEN = originalEnv;
+      }
+    }
+  });
+
+  it('starts on 127.0.0.1 with explicit token and returns valid handle', async () => {
     const host = createMockHost();
-    const handle = await startToolServer({ host, port: 8881 });
+    const handle = await startToolServer({ host, port: 8881, token: 'test-explicit-token-12345' });
     runningHandles.push(handle);
 
     expect(handle.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
-    expect(handle.token).toHaveLength(64);
-    expect(/^[0-9a-f]{64}$/.test(handle.token)).toBe(true);
+    expect(handle.token).toBe('test-explicit-token-12345');
     expect(handle.server.isRunning).toBe(true);
+  });
+
+  it('preserves explicitly supplied token', async () => {
+    const host = createMockHost();
+    const customToken = 'custom-explicit-token-12345';
+    const handle = await startToolServer({ host, port: 8881, token: customToken });
+    runningHandles.push(handle);
+
+    expect(handle.token).toBe(customToken);
+    expect(handle.server.isRunning).toBe(true);
+  });
+
+  it('uses process.env.FORGE_MCP_TOKEN when set and opts.token is omitted', async () => {
+    const originalEnv = process.env.FORGE_MCP_TOKEN;
+    process.env.FORGE_MCP_TOKEN = 'env-override-token-999';
+    try {
+      const host = createMockHost();
+      const handle = await startToolServer({ host, port: 8881 });
+      runningHandles.push(handle);
+
+      expect(handle.token).toBe('env-override-token-999');
+    } finally {
+      if (originalEnv !== undefined) {
+        process.env.FORGE_MCP_TOKEN = originalEnv;
+      } else {
+        delete process.env.FORGE_MCP_TOKEN;
+      }
+    }
   });
 
   it('falls back to next port upon port collision', async () => {
     const host = createMockHost();
-    const handle1 = await startToolServer({ host, port: 8882 });
+    const handle1 = await startToolServer({ host, port: 8882, token: 'test-token' });
     runningHandles.push(handle1);
 
-    const handle2 = await startToolServer({ host, port: 8882 });
+    const handle2 = await startToolServer({ host, port: 8882, token: 'test-token' });
     runningHandles.push(handle2);
 
     expect(handle1.server.port).toBe(8882);
@@ -146,7 +189,7 @@ describe('startToolServer helper', () => {
 
   it('stop() is idempotent and releases bound socket', async () => {
     const host = createMockHost();
-    const handle = await startToolServer({ host, port: 8884 });
+    const handle = await startToolServer({ host, port: 8884, token: 'test-token' });
 
     expect(handle.server.isRunning).toBe(true);
     const boundPort = handle.server.port!;
@@ -249,7 +292,7 @@ describe('startToolServer helper', () => {
 
   it('call with no proposalProvider configured returns no active run', async () => {
     const host = createMockHost();
-    const handle = await startToolServer({ host, port: 8888 });
+    const handle = await startToolServer({ host, port: 8888, token: 'test-token' });
     runningHandles.push(handle);
 
     // Test the internal proposal handlers attached to server
@@ -283,6 +326,7 @@ describe('startToolServer helper', () => {
       host,
       proposalProvider: orchestrator,
       port: 8889,
+      token: 'test-token',
     });
     runningHandles.push(handle);
 
@@ -375,6 +419,7 @@ describe('startToolServer helper', () => {
       host,
       proposalProvider: orchestrator,
       port: 8890,
+      token: 'test-token',
     });
     runningHandles.push(handle);
 
@@ -446,8 +491,10 @@ describe('scripts/engine-cli with tool server lifecycle', () => {
     let serverStarted = false;
     let serverStopped = false;
 
-    const mockStartToolServer = async (_opts: unknown): Promise<ToolServerHandle> => {
+    let capturedToken: string | undefined;
+    const mockStartToolServer = async (opts: unknown): Promise<ToolServerHandle> => {
       serverStarted = true;
+      capturedToken = (opts as { token?: string }).token;
       return {
         url: 'http://127.0.0.1:8792/mcp',
         token: 'test-cli-token',
@@ -483,6 +530,36 @@ describe('scripts/engine-cli with tool server lifecycle', () => {
     expect(code).toBe(0);
     expect(serverStarted).toBe(true);
     expect(serverStopped).toBe(true);
+    expect(capturedToken).toBe('configured-mock-token-999');
+  });
+
+  it('fails with exit code 1 when no token is configured or available in environment', async () => {
+    const originalEnv = process.env.FORGE_MCP_TOKEN;
+    delete process.env.FORGE_MCP_TOKEN;
+    try {
+      const config = createMockConfig();
+      delete (config.setup.mcp as { token?: string }).token;
+      const host = createMockHost();
+      const client = new ForgeClient(config.setup);
+      const stderrLines: string[] = [];
+
+      const code = await runCli(['--forgeDir', 'forge', 'no token run'], {
+        config,
+        host,
+        client,
+        healthCheck: async () => ({ ok: true }),
+        startToolServer,
+        engine: createStubEngine(async function* () {}),
+        stderr: (m) => stderrLines.push(m),
+      });
+
+      expect(code).toBe(1);
+      expect(stderrLines.join('\n')).toContain('No MCP authentication token available. Please run setup first');
+    } finally {
+      if (originalEnv !== undefined) {
+        process.env.FORGE_MCP_TOKEN = originalEnv;
+      }
+    }
   });
 
   it('stops tool server in finally even when stream execution fails', async () => {

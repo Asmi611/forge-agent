@@ -9,6 +9,8 @@
  */
 
 import * as path from 'node:path';
+import * as fs from 'node:fs';
+import * as crypto from 'node:crypto';
 import { loadConfig, ConfigError } from '../src/engine/config.ts';
 import { ForgeClient, ForgeClientError, HttpError, NetworkError } from '../src/engine/ForgeClient.ts';
 
@@ -33,7 +35,7 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
     printUsage();
-    process.exit(0);
+    return;
   }
 
   const allowRemote = args.includes('--allow-remote');
@@ -58,7 +60,8 @@ async function main(): Promise<void> {
   } catch (err: unknown) {
     if (err instanceof ConfigError) {
       console.error(`\n[config error] ${err.message}`);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     throw err;
   }
@@ -74,32 +77,74 @@ async function main(): Promise<void> {
     console.error('To start TrueForge in local mode, run:');
     console.error('  npx @truefoundry/trueforge@latest');
     console.error('Then re-run this setup script.');
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   console.log(`[probe] ${health.detail}`);
 
-  // 3. Register or reuse MCP connector
+  // 3. Register or synchronize MCP connector
   const mcpPort = config.setup.mcp.port;
   const mcpPath = config.setup.mcp.path.startsWith('/') ? config.setup.mcp.path : `/${config.setup.mcp.path}`;
   const mcpUrl = `http://127.0.0.1:${mcpPort}${mcpPath}`;
-  const mcpToken = process.env.FORGE_MCP_TOKEN || 'forge-editor-local-token';
 
-  console.log(`\n[mcp] Registering connector '${config.setup.mcp.name}' at ${mcpUrl}...`);
+  // Resolve effective token in strict precedence:
+  // 1. process.env.FORGE_MCP_TOKEN
+  // 2. Existing config.setup.mcp.token (from forge/setup.local.json)
+  // 3. Generate crypto.randomBytes(32).toString('hex')
+  const envToken = process.env.FORGE_MCP_TOKEN?.trim();
+  const configToken = config.setup.mcp.token?.trim();
+  const tokenSource = envToken ? 'environment (FORGE_MCP_TOKEN)' : configToken ? 'forge/setup.local.json' : 'generated (crypto random 32 bytes)';
+  const effectiveToken = envToken || configToken || crypto.randomBytes(32).toString('hex');
+
+  // Persist effective token in forge/setup.local.json under mcp.token, preserving unrelated configuration
+  const forgeDir = path.resolve(workspaceRoot, 'forge');
+  const setupLocalPath = path.resolve(forgeDir, 'setup.local.json');
+
+  let localSetupObj: Record<string, unknown> = {};
+  if (fs.existsSync(setupLocalPath)) {
+    try {
+      const raw = fs.readFileSync(setupLocalPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        localSetupObj = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Malformed or unreadable file: fallback to empty object to preserve safety
+    }
+  }
+
+  const existingMcp = (typeof localSetupObj.mcp === 'object' && localSetupObj.mcp !== null && !Array.isArray(localSetupObj.mcp))
+    ? (localSetupObj.mcp as Record<string, unknown>)
+    : {};
+
+  if (existingMcp.token !== effectiveToken) {
+    localSetupObj.mcp = {
+      ...existingMcp,
+      token: effectiveToken,
+    };
+    fs.writeFileSync(setupLocalPath, JSON.stringify(localSetupObj, null, 2) + '\n', 'utf-8');
+    console.log(`[mcp] Persisted token to ${setupLocalPath} (source: ${tokenSource}).`);
+  } else {
+    console.log(`[mcp] Token already configured in ${setupLocalPath} (source: ${tokenSource}).`);
+  }
+
+  console.log(`\n[mcp] Synchronizing connector '${config.setup.mcp.name}' at ${mcpUrl}...`);
   try {
     const regResult = await client.registerMcp({
       name: config.setup.mcp.name,
       url: mcpUrl,
-      token: mcpToken,
+      token: effectiveToken,
     });
     if (regResult.reused) {
-      console.log(`[mcp] Connector '${config.setup.mcp.name}' already configured with matching parameters (reused safely).`);
+      console.log(`[mcp] Connector '${config.setup.mcp.name}' synchronized successfully in TrueForge.`);
     } else {
       console.log(`[mcp] Connector '${config.setup.mcp.name}' registered successfully.`);
     }
   } catch (err: unknown) {
     if (err instanceof ForgeClientError) {
       console.error(`\n[mcp error] ${err.message}`);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     throw err;
   }
@@ -114,7 +159,8 @@ async function main(): Promise<void> {
     console.error(`  fallback: '${fallbackModel}'`);
     console.error('\nPlease copy forge/models.example.json to forge/models.local.json (gitignored) and');
     console.error('set valid provider/model IDs configured in your local TrueForge instance.');
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   console.log('\n[agents] Configuring agents in TrueForge...');
@@ -125,7 +171,8 @@ async function main(): Promise<void> {
   } catch (err: unknown) {
     if (err instanceof ForgeClientError || err instanceof HttpError || err instanceof NetworkError) {
       console.error(`\n[agent setup error] ${err.message}`);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     throw err;
   }
@@ -143,5 +190,5 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   console.error('\n[unexpected error]', err);
-  process.exit(1);
+  process.exitCode = 1;
 });

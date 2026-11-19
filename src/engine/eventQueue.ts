@@ -44,7 +44,11 @@ export class SingleConsumerEventQueue implements AsyncIterable<EngineEvent> {
   private consumerActive = false;
   private isIteratorReturned = false;
 
-  constructor(private readonly getAuthoritativeEpoch: () => number) {}
+  private readonly getAuthoritativeEpoch: () => number;
+
+  constructor(getAuthoritativeEpoch: () => number) {
+    this.getAuthoritativeEpoch = getAuthoritativeEpoch;
+  }
 
   /**
    * Enqueues an event from a producer matching the authoritative epoch.
