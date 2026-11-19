@@ -8,7 +8,13 @@
 
 import * as path from 'node:path';
 import type { EngineApi, UiHost } from '../src/types/contract.ts';
-import { createEngine } from '../src/engine/index.ts';
+import {
+  createEngine,
+  startToolServer,
+  type StartToolServerOptions,
+  type ToolServerHandle,
+  type ProposalHandlerProvider,
+} from '../src/engine/index.ts';
 import { ForgeClient } from '../src/engine/ForgeClient.ts';
 import { loadConfig, type EngineConfig } from '../src/engine/config.ts';
 import { MockUiHost } from '../src/mocks/MockUiHost.ts';
@@ -22,6 +28,8 @@ export interface CliDependencies {
   client?: ForgeClient;
   config?: EngineConfig;
   healthCheck?: (client: ForgeClient) => Promise<{ ok: boolean; detail?: string }>;
+  startToolServer?: (opts: StartToolServerOptions) => Promise<ToolServerHandle>;
+  skipToolServer?: boolean;
   stdout?: (message: string) => void;
   stderr?: (message: string) => void;
   workspaceRoot?: string;
@@ -302,6 +310,16 @@ export async function runCli(args: string[], deps?: CliDependencies): Promise<nu
       client,
     });
 
+/** Type guard checking if an engine instance exposes getProposalHandlers() without blind casting. */
+function isProposalHandlerProvider(obj: unknown): obj is ProposalHandlerProvider {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    'getProposalHandlers' in obj &&
+    typeof (obj as ProposalHandlerProvider).getProposalHandlers === 'function'
+  );
+}
+
   // 5. Select model profile if requested
   if (parsed.profile && typeof engine.switchModel === 'function') {
     try {
@@ -312,7 +330,30 @@ export async function runCli(args: string[], deps?: CliDependencies): Promise<nu
     }
   }
 
-  // 6. Execute run stream and verify terminal event outcome
+  // 6. Start MCP tool server unless skipToolServer or injected deps
+  let toolServer: ToolServerHandle | null = null;
+  const shouldStartServer =
+    !deps?.skipToolServer &&
+    (deps?.startToolServer !== undefined || (!deps?.engine && !deps?.client));
+
+  if (shouldStartServer) {
+    const startFn = deps?.startToolServer ?? startToolServer;
+    const proposalProvider = isProposalHandlerProvider(engine) ? engine : undefined;
+    try {
+      toolServer = await startFn({
+        host,
+        client,
+        proposalProvider,
+        name: config.setup.mcp.name,
+        port: config.setup.mcp.port,
+      });
+    } catch (err: unknown) {
+      stderr(`Failed to start MCP tool server: ${(err as Error).message}`);
+      return 1;
+    }
+  }
+
+  // 7. Execute run stream and verify terminal event outcome
   let terminalReceived = false;
   let exitCode = 1;
 
@@ -349,6 +390,14 @@ export async function runCli(args: string[], deps?: CliDependencies): Promise<nu
   } catch (err: unknown) {
     stderr(`CLI execution error: ${(err as Error).message}`);
     return 1;
+  } finally {
+    if (toolServer) {
+      try {
+        await toolServer.stop();
+      } catch (stopErr: unknown) {
+        stderr(`Failed to stop MCP tool server: ${(stopErr as Error).message}`);
+      }
+    }
   }
 
   if (!terminalReceived) {
