@@ -15,7 +15,10 @@ import type {
   ReviewResult,
   ForgeError,
   UiHost,
+  ContextItem,
+  LineRange,
 } from '../types/contract.ts';
+import { RunBudget } from './budget.ts';
 import {
   isPlainObject,
   type EngineConfig,
@@ -99,6 +102,11 @@ interface RunContext {
   originalInput: unknown[];
   primaryFailure?: ClassifiedError | ForgeError;
   loopGuard: LoopGuard;
+  budget: RunBudget;
+  isBudgetLive: boolean;
+  seedContextItems: ContextItem[];
+  contextItems: Map<string, ContextItem>;
+  activeToolCalls: Map<string, { tool: string; args: unknown }>;
 }
 
 /**
@@ -110,6 +118,13 @@ export class SessionOrchestrator implements EngineApi {
   private activeProfile: 'primary' | 'fallback';
   private lastRunAnyHunkApplied = false;
   private readonly host: UiHost;
+
+  /**
+   * Returns the active run's RunBudget instance, if an active run exists.
+   */
+  public getActiveBudget(): RunBudget | undefined {
+    return this.activeContext?.budget;
+  }
   private readonly client: ForgeClient;
   private readonly config: EngineConfig;
   private readonly logger?: EngineLogger;
@@ -295,6 +310,23 @@ export class SessionOrchestrator implements EngineApi {
               const profile = this.activeProfile;
               const modelId = this.config.models.profiles[profile]?.modelId ?? 'unknown-model';
 
+              const limitTokens = this.config.setup.budgets.runToolBudgetTokens;
+              const budget = new RunBudget({
+                configuredRunLimit: limitTokens,
+                configuredSeedLimit: this.config.setup.budgets.seedTokens,
+                configuredMentionsLimit: this.config.setup.budgets.mentionsTokens,
+                onBudgetChange: (used, _limit) => {
+                  try {
+                    if (runContext && runContext.isBudgetLive && !runContext.isFinalized && !runContext.isCancelled) {
+                      runContext.usedTokens = used;
+                      runContext.queue.push({ type: 'budget', usedTokens: used, limitTokens }, runContext.epoch);
+                    }
+                  } catch {
+                    // never throw
+                  }
+                },
+              });
+
               runContext = {
                 runId,
                 mode,
@@ -313,6 +345,11 @@ export class SessionOrchestrator implements EngineApi {
                 approvalBridge: new ApprovalBridge(this.host),
                 originalInput: [],
                 loopGuard: new LoopGuard({ clock: this.clock }),
+                budget,
+                isBudgetLive: false,
+                seedContextItems: [],
+                contextItems: new Map(),
+                activeToolCalls: new Map(),
               };
 
               this.activeContext = runContext;
@@ -390,19 +427,32 @@ export class SessionOrchestrator implements EngineApi {
       }
 
       // 3. Emit initial budget event through run's existing queue
+      const limitTokens = this.config.setup.budgets.runToolBudgetTokens;
       ctx.queue.push(
         {
           type: 'budget',
-          usedTokens: ctx.usedTokens,
-          limitTokens: this.config.setup.budgets.runToolBudgetTokens,
+          usedTokens: ctx.budget.getUsedTokens(),
+          limitTokens,
         },
         ctx.epoch
       );
       this.log('run:budget_initial', {
         runId: ctx.runId,
-        usedTokens: ctx.usedTokens,
-        limitTokens: this.config.setup.budgets.runToolBudgetTokens,
+        usedTokens: ctx.budget.getUsedTokens(),
+        limitTokens,
       });
+
+      if (ctx.mode === 'agent' && ctx.contextItems.size > 0) {
+        ctx.queue.push(
+          {
+            type: 'context.report',
+            items: Array.from(ctx.contextItems.values()),
+          },
+          ctx.epoch
+        );
+      }
+
+      ctx.isBudgetLive = true;
 
       // 4. Execution loop handling session creation, turn streaming, retries, and failover
       let attempt = 0;
@@ -529,6 +579,7 @@ export class SessionOrchestrator implements EngineApi {
               const mapResult = mapRawEvent(raw, ctx.mapperState);
               for (const ev of mapResult.events) {
                 if (ev.type === 'tool.call') {
+                  ctx.activeToolCalls.set(ev.callId, { tool: ev.tool, args: ev.args });
                   if (ev.tool === 'proposeEdit' || ev.tool === 'createFile') {
                     // Edits reset repetition history
                     ctx.loopGuard.reset();
@@ -558,6 +609,69 @@ export class SessionOrchestrator implements EngineApi {
                   sideEffectsOccurredInAttempt = true;
                 }
                 ctx.queue.push(ev, ctx.epoch);
+
+                if (ev.type === 'tool.result') {
+                  const callInfo = ctx.activeToolCalls.get(ev.callId);
+                  if (callInfo) {
+                    ctx.activeToolCalls.delete(ev.callId);
+                    if (ev.ok && ctx.mode === 'agent') {
+                      try {
+                        let updated = false;
+                        if (callInfo.tool === 'readFile') {
+                          const args = callInfo.args as { path?: string; range?: LineRange };
+                          if (args && typeof args.path === 'string' && args.path.trim().length > 0) {
+                            const relPath = args.path.replace(/\\/g, '/');
+                            const tokens = Math.max(1, RunBudget.estimateTokens(ev.summary ?? ''));
+                            const ci: ContextItem = {
+                              path: relPath,
+                              reason: 'Read by agent',
+                              tokens,
+                              source: 'agent-tool',
+                              range: args.range,
+                            };
+                            ctx.contextItems.set(relPath, ci);
+                            updated = true;
+                          }
+                        } else if (callInfo.tool === 'reportContext') {
+                          const args = callInfo.args as { items?: Array<{ path: string; reason: string }> };
+                          if (args && Array.isArray(args.items)) {
+                            for (const item of args.items) {
+                              if (item && typeof item.path === 'string' && item.path.trim().length > 0) {
+                                const relPath = item.path.replace(/\\/g, '/');
+                                const existing = ctx.contextItems.get(relPath);
+                                const ci: ContextItem = {
+                                  path: relPath,
+                                  reason:
+                                    typeof item.reason === 'string' && item.reason.trim().length > 0
+                                      ? item.reason.trim()
+                                      : existing?.reason ?? 'Reported by agent',
+                                  tokens: existing?.tokens ?? 50,
+                                  source: 'agent-tool',
+                                  range: existing?.range,
+                                };
+                                ctx.contextItems.set(relPath, ci);
+                                updated = true;
+                              }
+                            }
+                          }
+                        }
+
+                        if (updated) {
+                          ctx.queue.push(
+                            {
+                              type: 'context.report',
+                              items: Array.from(ctx.contextItems.values()),
+                            },
+                            ctx.epoch
+                          );
+                        }
+                      } catch {
+                        // never throw
+                      }
+                    }
+                  }
+                }
+
                 if (terminalEncountered) {
                   break;
                 }
@@ -879,16 +993,38 @@ export class SessionOrchestrator implements EngineApi {
         ctx.epoch
       );
 
-      // 5. Budget reset: re-charge seed and mentions, then emit budget event
-      ctx.usedTokens = ctx.initialTokens;
+      // 5. Budget and context reset: reset meter, re-charge initial tokens, reset context items
+      ctx.isBudgetLive = false;
+      ctx.budget.reset();
+      ctx.budget.charge(ctx.initialTokens);
+      ctx.usedTokens = ctx.budget.getUsedTokens();
+      const failoverLimit = this.config.setup.budgets.runToolBudgetTokens;
       ctx.queue.push(
         {
           type: 'budget',
           usedTokens: ctx.usedTokens,
-          limitTokens: this.config.setup.budgets.runToolBudgetTokens,
+          limitTokens: failoverLimit,
         },
         ctx.epoch
       );
+
+      ctx.contextItems.clear();
+      for (const item of ctx.seedContextItems) {
+        ctx.contextItems.set(item.path, { ...item });
+      }
+      ctx.activeToolCalls.clear();
+
+      if (ctx.mode === 'agent' && ctx.contextItems.size > 0) {
+        ctx.queue.push(
+          {
+            type: 'context.report',
+            items: Array.from(ctx.contextItems.values()),
+          },
+          ctx.epoch
+        );
+      }
+
+      ctx.isBudgetLive = true;
 
       // 6. Switch context to fallback
       ctx.primaryFailure = classified;
@@ -996,7 +1132,8 @@ export class SessionOrchestrator implements EngineApi {
       const inlineReq = req as InlineRequest;
       const promptTokens = Math.ceil(inlineReq.prompt.length / 4);
       const textTokens = Math.ceil(inlineReq.selectedText.length / 4);
-      ctx.usedTokens = promptTokens + textTokens;
+      ctx.budget.charge(promptTokens + textTokens);
+      ctx.usedTokens = ctx.budget.getUsedTokens();
 
       const blocks: ContextBlock[] = [
         {
@@ -1030,6 +1167,14 @@ export class SessionOrchestrator implements EngineApi {
             text: mention.content,
           });
           mentionsTokenCount += estimatedTokens;
+          const ci: ContextItem = {
+            path: mention.path.replace(/\\/g, '/'),
+            reason: `@${mention.label}`,
+            tokens: estimatedTokens,
+            source: 'mention',
+          };
+          ctx.seedContextItems.push(ci);
+          ctx.contextItems.set(ci.path, ci);
         } else {
           const allowedChars = Math.max(0, (mentionsLimit - mentionsTokenCount) * 4);
           const truncatedContent =
@@ -1043,6 +1188,14 @@ export class SessionOrchestrator implements EngineApi {
           });
           const actualTruncatedTokens = Math.ceil(truncatedContent.length / 4);
           mentionsTokenCount += actualTruncatedTokens;
+          const ci: ContextItem = {
+            path: mention.path.replace(/\\/g, '/'),
+            reason: `@${mention.label} (truncated)`,
+            tokens: actualTruncatedTokens,
+            source: 'mention',
+          };
+          ctx.seedContextItems.push(ci);
+          ctx.contextItems.set(ci.path, ci);
           break;
         }
       }
@@ -1065,6 +1218,15 @@ export class SessionOrchestrator implements EngineApi {
               range: item.range,
               text,
             });
+            const ci: ContextItem = {
+              path: item.path.replace(/\\/g, '/'),
+              reason: item.reason,
+              tokens: actualTokens,
+              source: 'auto',
+              range: item.range,
+            };
+            ctx.seedContextItems.push(ci);
+            ctx.contextItems.set(ci.path, ci);
           } catch {
             // Ignore individual file read failures for seed items
           }
@@ -1074,7 +1236,10 @@ export class SessionOrchestrator implements EngineApi {
       this.log('seed:error', { error: (seedErr as Error).message });
     }
 
-    ctx.usedTokens = promptTokens + mentionsTokenCount + seedTokenCount;
+    ctx.budget.charge(promptTokens);
+    ctx.budget.chargeMentions(mentionsTokenCount);
+    ctx.budget.chargeSeed(seedTokenCount);
+    ctx.usedTokens = ctx.budget.getUsedTokens();
 
     return this.client.userMessageInput(agentReq.prompt, contextBlocks);
   }

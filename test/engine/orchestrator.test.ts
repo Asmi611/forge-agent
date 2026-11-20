@@ -220,6 +220,8 @@ describe('SessionOrchestrator - Lifecycle and State Machine', () => {
     resolveTurn!();
     const eBudget = await iter.next();
     expect(eBudget.value?.type).toBe('budget');
+    const eContext = await iter.next();
+    expect(eContext.value?.type).toBe('context.report');
     const e2 = await iter.next();
     expect(e2.value).toEqual({ type: 'run.completed' });
   });
@@ -427,12 +429,13 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
       events.push(ev);
     }
 
-    expect(events.length).toBe(5);
+    expect(events.length).toBe(6);
     expect(events[0].type).toBe('run.started');
     expect(events[1].type).toBe('budget');
-    expect(events[2]).toEqual({ type: 'token', text: 'chunk 1' });
-    expect(events[3]).toEqual({ type: 'token', text: 'chunk 2' });
-    expect(events[4]).toEqual({ type: 'run.completed', summary: 'Summary string' });
+    expect(events[2].type).toBe('context.report');
+    expect(events[3]).toEqual({ type: 'token', text: 'chunk 1' });
+    expect(events[4]).toEqual({ type: 'token', text: 'chunk 2' });
+    expect(events[5]).toEqual({ type: 'run.completed', summary: 'Summary string' });
 
     // Clean completion must NOT call client.cancel()
     expect(cancelSpy).not.toHaveBeenCalled();
@@ -480,12 +483,13 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
       events.push(ev);
     }
 
-    expect(events.length).toBe(5);
+    expect(events.length).toBe(6);
     expect(events[0].type).toBe('run.started');
     expect(events[1].type).toBe('budget');
-    expect(events[2]).toEqual({ type: 'token', text: 'token 1' });
-    expect(events[3]).toEqual({ type: 'token', text: 'token 2' });
-    expect(events[4]).toEqual({ type: 'run.completed', summary: 'real final summary' });
+    expect(events[2].type).toBe('context.report');
+    expect(events[3]).toEqual({ type: 'token', text: 'token 1' });
+    expect(events[4]).toEqual({ type: 'token', text: 'token 2' });
+    expect(events[5]).toEqual({ type: 'run.completed', summary: 'real final summary' });
   });
 
   it('detects pause conditions with precedence on turn.update', async () => {
@@ -693,10 +697,11 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
       events.push(ev);
     }
 
-    expect(events.length).toBe(3);
+    expect(events.length).toBe(4);
     expect(events[0].type).toBe('run.started');
     expect(events[1].type).toBe('budget');
-    expect(events[2]).toEqual({
+    expect(events[2].type).toBe('context.report');
+    expect(events[3]).toEqual({
       type: 'run.failed',
       error: {
         kind: 'unknown',
@@ -812,10 +817,11 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
       events.push(ev);
     }
 
-    expect(events.length).toBe(3);
+    expect(events.length).toBe(4);
     expect(events[0].type).toBe('run.started');
     expect(events[1].type).toBe('budget');
-    expect(events[2]).toEqual({
+    expect(events[2].type).toBe('context.report');
+    expect(events[3]).toEqual({
       type: 'run.failed',
       error: {
         kind: 'unknown',
@@ -848,11 +854,12 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
       events.push(ev);
     }
 
-    expect(events.length).toBe(4);
+    expect(events.length).toBe(5);
     expect(events[0].type).toBe('run.started');
     expect(events[1].type).toBe('budget');
-    expect(events[2]).toEqual({ type: 'token', text: 'chunk' });
-    expect(events[3]).toEqual({
+    expect(events[2].type).toBe('context.report');
+    expect(events[3]).toEqual({ type: 'token', text: 'chunk' });
+    expect(events[4]).toEqual({
       type: 'run.failed',
       error: {
         kind: 'unreachable',
@@ -890,6 +897,7 @@ describe('SessionOrchestrator - Cancellation and Teardown', () => {
 
     await iter.next(); // run.started
     await iter.next(); // budget
+    await iter.next(); // context.report
     await iter.next(); // token
 
     // Explicit cancel
@@ -924,6 +932,7 @@ describe('SessionOrchestrator - Cancellation and Teardown', () => {
 
     await iter.next(); // run.started
     await iter.next(); // budget
+    await iter.next(); // context.report
 
     // Cancel while session creation is pending
     await orchestrator.cancel();
@@ -969,6 +978,7 @@ describe('SessionOrchestrator - Cancellation and Teardown', () => {
 
     await iter.next(); // run.started
     await iter.next(); // budget
+    await iter.next(); // context.report
     await iter.next(); // token ('chunk')
     // Cancel should not throw or fail
     await orchestrator.cancel();
@@ -1075,8 +1085,11 @@ describe('SessionOrchestrator - Error Classification and Epoch Gating', () => {
       events.push(ev);
     }
 
-    expect(events.length).toBe(3);
-    expect(events[2]).toEqual({
+    expect(events.length).toBe(4);
+    expect(events[0].type).toBe('run.started');
+    expect(events[1].type).toBe('budget');
+    expect(events[2].type).toBe('context.report');
+    expect(events[3]).toEqual({
       type: 'run.failed',
       error: {
         kind: 'unreachable',
@@ -1156,6 +1169,7 @@ describe('SessionOrchestrator - Error Classification and Epoch Gating', () => {
 
     await iter.next(); // run.started
     await iter.next(); // budget
+    await iter.next(); // context.report
     const tok = await iter.next(); // first chunk
     expect(tok.value).toEqual({ type: 'token', text: 'first chunk' });
 
@@ -1432,11 +1446,12 @@ describe('scripts/engine-cli (runCli)', () => {
     expect(clientPassedToHealth).toBe(testClient);
     expect(createSessionSpy).toHaveBeenCalled();
     expect(createTurnSpy).toHaveBeenCalled();
-    expect(stdoutLines.length).toBe(4);
+    expect(stdoutLines.length).toBe(5);
     expect(JSON.parse(stdoutLines[0]).type).toBe('run.started');
     expect(JSON.parse(stdoutLines[1]).type).toBe('budget');
-    expect(JSON.parse(stdoutLines[2])).toEqual({ type: 'token', text: 'hi from turn' });
-    expect(JSON.parse(stdoutLines[3])).toEqual({ type: 'run.completed', summary: 'all good' });
+    expect(JSON.parse(stdoutLines[2]).type).toBe('context.report');
+    expect(JSON.parse(stdoutLines[3])).toEqual({ type: 'token', text: 'hi from turn' });
+    expect(JSON.parse(stdoutLines[4])).toEqual({ type: 'run.completed', summary: 'all good' });
     expect(stderrLines.length).toBe(0);
   });
 

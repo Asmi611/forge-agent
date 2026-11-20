@@ -43,8 +43,9 @@ export interface StartToolServerOptions {
   name?: string;
   port?: number;
   token?: string;
-  // TODO E-06c: per-run budget wiring
+  // Milestone E-11: per-run dynamic budget wiring
   budget?: RunBudget;
+  budgetProvider?: () => RunBudget | undefined;
   logger?: ToolServerLogger;
 }
 
@@ -83,6 +84,7 @@ export async function startToolServer(opts: StartToolServerOptions): Promise<Too
     port,
     token,
     budget: opts.budget,
+    budgetProvider: opts.budgetProvider,
   });
 
   // Wire proposal handlers dynamically through proposalProvider

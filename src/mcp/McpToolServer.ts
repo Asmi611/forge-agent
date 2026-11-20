@@ -97,6 +97,7 @@ export interface McpToolServerOptions {
   port?: number;
   token?: string;
   budget?: RunBudget;
+  budgetProvider?: () => RunBudget | undefined;
 }
 
 /** Information snapshot of a running MCP tool server. */
@@ -136,6 +137,7 @@ export class McpToolServer {
   private readonly configuredPort: number;
   private serverToken: string;
   private budget?: RunBudget;
+  private budgetProvider?: () => RunBudget | undefined;
 
   private httpServer: http.Server | null = null;
   private actualPort: number | null = null;
@@ -164,6 +166,7 @@ export class McpToolServer {
     this.configuredPort = options?.port ?? DEFAULT_MCP_PORT;
     this.serverToken = options?.token ?? crypto.randomBytes(32).toString('hex');
     this.budget = options?.budget;
+    this.budgetProvider = options?.budgetProvider;
   }
 
   /** Gets the connector name registered with TrueForge. */
@@ -205,6 +208,11 @@ export class McpToolServer {
   /** Attaches or updates the active RunBudget instance. */
   public setBudget(budget?: RunBudget): void {
     this.budget = budget;
+  }
+
+  /** Attaches or updates a dynamic RunBudget provider. */
+  public setBudgetProvider(provider?: () => RunBudget | undefined): void {
+    this.budgetProvider = provider;
   }
 
   /** Pluggable hook allowing Milestone E-05 to attach production proposal handlers. */
@@ -446,8 +454,12 @@ export class McpToolServer {
 
     const executionContext: ToolExecutionContext = {
       host: this.host,
-      budget: this.budget,
     };
+    Object.defineProperty(executionContext, 'budget', {
+      get: () => (this.budgetProvider ? this.budgetProvider() : this.budget),
+      enumerable: true,
+      configurable: true,
+    });
 
     // 1. repoMap
     server.registerTool(
