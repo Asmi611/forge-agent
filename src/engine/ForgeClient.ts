@@ -77,18 +77,6 @@ export interface SubscribeTurnOptions {
   reconnectDelayMs?: number;
 }
 
-interface McpServerRecord {
-  name: string;
-  manifest?: {
-    url?: string;
-    auth?: {
-      type?: string;
-      headers?: Record<string, string>;
-    };
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
 
 interface AgentRecord {
   id?: string;
@@ -313,12 +301,12 @@ export class ForgeClient {
     }
   }
 
-  /** Idempotently registers or safely verifies the local MCP connector with exact token comparison. */
+  /** Idempotently registers or updates the local MCP connector in TrueForge via PUT upsert. */
   async registerMcp(params: { name: string; url: string; token: string }): Promise<{ ok: boolean; reused: boolean }> {
     const manifest = {
       type: 'remote',
       name: params.name,
-      description: 'Forge Editor MCP server',
+      description: 'Forge Editor tools (read-only queries + proposal handlers)',
       url: params.url,
       auth: {
         type: 'header',
@@ -326,52 +314,14 @@ export class ForgeClient {
       },
     };
 
-    const res = await this.request('POST', '/api/v1/settings/mcp-servers', { manifest });
+    const res = await this.request('PUT', '/api/v1/settings/mcp-servers', { manifest });
     if (res.ok) {
-      return { ok: true, reused: false };
+      return { ok: true, reused: true };
     }
 
-    if (res.status === 409) {
-      // Name conflict: inspect existing registrations
-      const listRes = await this.request('GET', '/api/v1/settings/mcp-servers');
-      if (!listRes.ok) {
-        throw new HttpError(listRes.status, listRes.data, 'Failed to query existing MCP servers after 409 conflict');
-      }
-
-      const listData = isPlainObject(listRes.data) && Array.isArray(listRes.data.data)
-        ? (listRes.data.data as McpServerRecord[])
-        : Array.isArray(listRes.data)
-        ? (listRes.data as McpServerRecord[])
-        : [];
-      const existing = listData.find((item) => item && item.name === params.name);
-
-      if (!existing) {
-        throw new ForgeClientError(`MCP server '${params.name}' reported conflict, but could not be located in settings list.`);
-      }
-
-      const existingRecord = existing as McpServerRecord;
-      const existingUrl = existingRecord.manifest?.url;
-      const existingAuthType = existingRecord.manifest?.auth?.type;
-      const existingHeader = existingRecord.manifest?.auth?.headers?.['x-forge-token'];
-
-      // Exact token check required: different nonempty token is a conflict
-      const matches =
-        existingUrl === params.url &&
-        existingAuthType === 'header' &&
-        existingHeader === params.token;
-
-      if (matches) {
-        return { ok: true, reused: true };
-      }
-
-      throw new ForgeClientError(
-        `registerMcp: existing connector '${params.name}' differs from requested configuration ` +
-        `(url: '${existingUrl}' vs '${params.url}', auth: '${existingAuthType}' vs 'header', token: ${existingHeader === params.token ? 'match' : 'mismatch'}). ` +
-        `Overwrite refused to prevent port collision or token mismatch.`
-      );
-    }
-
-    throw new HttpError(res.status, res.data, `Failed to register MCP server '${params.name}'`);
+    const detail = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+    const safeDetail = detail.replace(new RegExp(params.token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '[REDACTED]');
+    throw new HttpError(res.status, safeDetail, `Failed to register MCP server '${params.name}'`);
   }
 
   /** Idempotently creates or safely updates primary and fallback agents from canonical specs with ownership verification. */
@@ -461,7 +411,10 @@ export class ForgeClient {
         throw new HttpError(getRes.status, getRes.data, `Failed to fetch existing agent '${name}' details`);
       }
 
-      const fullExisting = getRes.data as AgentRecord;
+      const rawData = getRes.data;
+      const fullExisting = isPlainObject(rawData) && isPlainObject(rawData.data)
+        ? (rawData.data as AgentRecord)
+        : (rawData as AgentRecord);
       const hasOwnership = fullExisting.description?.includes(ownershipMarker);
 
       if (!hasOwnership) {

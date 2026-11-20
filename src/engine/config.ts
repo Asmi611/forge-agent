@@ -20,6 +20,7 @@ export interface SetupConfig {
     perWorkspace: boolean;
     port: number;
     path: string;
+    token?: string;
   };
   budgets: {
     seedTokens: number;
@@ -177,6 +178,9 @@ export function validateSetupConfig(setup: Record<string, unknown>, sourcePath: 
   }
   if (typeof mcp.perWorkspace !== 'boolean') {
     throw new ConfigError(`Invalid config in '${sourcePath}': 'mcp.perWorkspace' must be a boolean`);
+  }
+  if (mcp.token !== undefined && (typeof mcp.token !== 'string' || mcp.token.trim() === '')) {
+    throw new ConfigError(`Invalid config in '${sourcePath}': 'mcp.token' must be a non-empty string when provided`);
   }
 
   if (!isPlainObject(setup.budgets)) {

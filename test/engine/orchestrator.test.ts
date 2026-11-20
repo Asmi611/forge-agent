@@ -827,6 +827,7 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
 
   it('unexpected stream EOF without terminal turn event produces unreachable failure', async () => {
     const config = createMockConfig();
+    config.setup.retry = { max: 0, baseDelayMs: 0 };
     const host = createMockHost();
     const client = new ForgeClient(config.setup);
 
@@ -841,7 +842,7 @@ describe('SessionOrchestrator - Wire Event Mapping and Ordering', () => {
     }
     vi.spyOn(client, 'createTurn').mockImplementation(() => abruptStream());
 
-    const orchestrator = new SessionOrchestrator(host, client, config);
+    const orchestrator = new SessionOrchestrator(host, client, config, { activeProfile: 'fallback' });
     const events: EngineEvent[] = [];
     for await (const ev of orchestrator.runAgent({ prompt: 'p', mentions: [] })) {
       events.push(ev);
@@ -1060,14 +1061,15 @@ describe('SessionOrchestrator - Cancellation and Teardown', () => {
 describe('SessionOrchestrator - Error Classification and Epoch Gating', () => {
   it('classifies NetworkError as unreachable and retryable', async () => {
     const config = createMockConfig();
+    config.setup.retry = { max: 0, baseDelayMs: 0 };
     const host = createMockHost();
     const client = new ForgeClient(config.setup);
 
     vi.spyOn(client, 'createSession').mockRejectedValue(
-      new NetworkError('ECONNREFUSED', new Error('Connection refused'))
+      new NetworkError('ECONNRESET', new Error('Connection reset'))
     );
 
-    const orchestrator = new SessionOrchestrator(host, client, config);
+    const orchestrator = new SessionOrchestrator(host, client, config, { activeProfile: 'fallback' });
     const events: EngineEvent[] = [];
     for await (const ev of orchestrator.runAgent({ prompt: 'net error', mentions: [] })) {
       events.push(ev);
@@ -1078,7 +1080,7 @@ describe('SessionOrchestrator - Error Classification and Epoch Gating', () => {
       type: 'run.failed',
       error: {
         kind: 'unreachable',
-        message: expect.stringContaining('ECONNREFUSED'),
+        message: expect.stringContaining('ECONNRESET'),
         retryable: true,
       },
     });
@@ -1086,6 +1088,7 @@ describe('SessionOrchestrator - Error Classification and Epoch Gating', () => {
 
   it('classifies HttpError 401/403 as auth, 429 as rate_limit, 408 as timeout, 500 as model', async () => {
     const config = createMockConfig();
+    config.setup.retry = { max: 0, baseDelayMs: 0 };
     const host = createMockHost();
 
     const cases: Array<{ status: number; expectedKind: string; retryable: boolean }> = [
@@ -1104,7 +1107,7 @@ describe('SessionOrchestrator - Error Classification and Epoch Gating', () => {
         new HttpError(c.status, { error: 'test' }, `HTTP error ${c.status}`)
       );
 
-      const orchestrator = new SessionOrchestrator(host, client, config);
+      const orchestrator = new SessionOrchestrator(host, client, config, { activeProfile: 'fallback' });
       const events: EngineEvent[] = [];
       for await (const ev of orchestrator.runAgent({ prompt: 'status test', mentions: [] })) {
         events.push(ev);

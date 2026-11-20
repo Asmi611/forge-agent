@@ -81,3 +81,13 @@ export {
   type ProposalHandlerProvider,
   type ToolServerLogger,
 } from '../mcp/startToolServer.ts';
+
+export {
+  createRuntime,
+  type CreateRuntimeOptions,
+  type ForgeRuntime,
+  type RuntimeInfo,
+  type RuntimeError,
+  type RuntimeErrorKind,
+  type CreateRuntimeResult,
+} from './runtime.ts';

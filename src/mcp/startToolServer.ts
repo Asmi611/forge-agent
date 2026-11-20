@@ -6,7 +6,6 @@
  * and ensures idempotent, leak-free teardown.
  */
 
-import * as crypto from 'node:crypto';
 import type { UiHost } from '../types/contract.ts';
 import type { ForgeClient } from '../engine/ForgeClient.ts';
 import type { RunBudget } from '../engine/budget.ts';
@@ -58,13 +57,24 @@ export interface ToolServerHandle {
 }
 
 /**
- * Starts McpToolServer on loopback (127.0.0.1) with random token and dynamic proposal resolution.
+ * Starts McpToolServer on loopback (127.0.0.1) with authenticated endpoint and dynamic proposal resolution.
  *
  * @param opts - Startup configuration options
  * @returns Running ToolServerHandle with bound endpoint and idempotent stop function
  */
 export async function startToolServer(opts: StartToolServerOptions): Promise<ToolServerHandle> {
-  const token = opts.token ?? crypto.randomBytes(32).toString('hex');
+  const token = (opts.token && opts.token.trim().length > 0)
+    ? opts.token.trim()
+    : (process.env.FORGE_MCP_TOKEN && process.env.FORGE_MCP_TOKEN.trim().length > 0)
+    ? process.env.FORGE_MCP_TOKEN.trim()
+    : undefined;
+
+  if (!token) {
+    throw new Error(
+      'No MCP authentication token available. Please run setup first (npm run forge:setup) or set the FORGE_MCP_TOKEN environment variable.'
+    );
+  }
+
   const port = opts.port ?? DEFAULT_MCP_PORT;
   const name = opts.name ?? DEFAULT_MCP_CONNECTOR_NAME;
 
