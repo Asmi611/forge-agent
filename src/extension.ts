@@ -9,6 +9,7 @@
  *
  * No workspace writes, no model-provider calls, no shell strings.
  */
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { DiffReviewer } from './review/DiffReviewer';
 import { proposalFromFixture, type DemoFixture } from './review/demoProposal';
@@ -25,11 +26,15 @@ import { registerInlineEdit } from './ui/InlineEdit';
 import { ForgeStatusBar } from './ui/StatusBar';
 import { VscodeSink } from './ui/VscodeSink';
 import { AgentPanel, PANEL_VIEW_ID } from './ui/AgentPanel/AgentPanel';
-import type { FileProposal } from './types/contract';
+import type { EngineApi, FileProposal } from './types/contract';
 import { registerContextCommands } from './context/contextCommands';
 import { createWorkspaceContext } from './context/workspaceContext';
+import { createRuntime, type ForgeRuntime } from './engine/runtime';
+import { createUiHost } from './ui';
 
-export function activate(context: vscode.ExtensionContext): void {
+let activeRuntime: ForgeRuntime | undefined;
+
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const reviewer = new DiffReviewer();
   context.subscriptions.push(reviewer);
   registerReviewCommands(context, reviewer);
@@ -52,11 +57,62 @@ export function activate(context: vscode.ExtensionContext): void {
   if (workspaceContext) context.subscriptions.push(workspaceContext);
   registerContextCommands(context, workspaceContext, contextOutput);
 
-  // Engine -> screen. The real engine is not built yet, so a contract-correct MOCK engine runs for now.
+  // Engine -> screen.
   const output = vscode.window.createOutputChannel('Forge');
   const status = new ForgeStatusBar();
   context.subscriptions.push(output, status);
-  const engine = createMockEngine({ getProposal: loadDemoProposal });
+
+  let engine: EngineApi;
+  const cfg = vscode.workspace.getConfiguration('forge');
+  const useMocks = cfg.get<boolean>('useMocks', false);
+
+  if (useMocks) {
+    output.appendLine('[Forge] MOCK ENGINE: running mock engine (forge.useMocks is enabled).');
+    vscode.window.showWarningMessage('Forge: Running in mock engine mode (forge.useMocks is enabled).');
+    engine = createMockEngine({ getProposal: () => loadDemoProposal(context) });
+  } else if (!root) {
+    output.appendLine('[Forge] MOCK ENGINE: no workspace folder open, falling back to mock engine.');
+    vscode.window.showWarningMessage('Forge: No workspace folder open. Running in mock engine mode.');
+    engine = createMockEngine({ getProposal: () => loadDemoProposal(context) });
+  } else {
+    const configuredForgeDir = cfg.get<string>('forgeDir', '');
+    const forgeDir = configuredForgeDir && configuredForgeDir.trim().length > 0
+      ? (path.isAbsolute(configuredForgeDir) ? configuredForgeDir : path.resolve(context.extensionPath, configuredForgeDir))
+      : path.join(context.extensionPath, 'forge');
+
+    const host = createUiHost({
+      root,
+      output,
+      context: workspaceContext?.provider,
+    });
+
+    try {
+      const rtResult = await createRuntime({
+        host,
+        forgeDir,
+      });
+
+      if (rtResult.ok) {
+        activeRuntime = rtResult.runtime;
+        engine = rtResult.runtime.engine;
+        output.appendLine(`[Forge] Real engine connected via ${rtResult.runtime.info.baseUrl} (MCP on port ${rtResult.runtime.info.port})`);
+      } else {
+        output.appendLine(`[Forge] MOCK ENGINE: real engine initialization failed (${rtResult.error.kind}): ${rtResult.error.message}`);
+        if (rtResult.error.actionHint) {
+          output.appendLine(`[Forge] Hint: ${rtResult.error.actionHint}`);
+        }
+        vscode.window.showWarningMessage(
+          `Forge: Real engine unavailable (${rtResult.error.message}). Falling back to mock engine. ${rtResult.error.actionHint}`,
+        );
+        engine = createMockEngine({ getProposal: () => loadDemoProposal(context) });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      output.appendLine(`[Forge] MOCK ENGINE: unexpected exception during createRuntime: ${msg}`);
+      vscode.window.showWarningMessage(`Forge: Unexpected error initializing real engine (${msg}). Falling back to mock engine.`);
+      engine = createMockEngine({ getProposal: () => loadDemoProposal(context) });
+    }
+  }
   const panel = new AgentPanel(context.extensionUri, {
     engine, reviewer, undo,
     resolveMention: workspaceContext ? (raw) => workspaceContext.provider.resolveMention(raw) : undefined,
@@ -84,18 +140,33 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 /** The demo proposal for the mock engine (read from fixtures/demo-proposal.json in the open folder). */
-async function loadDemoProposal(): Promise<FileProposal | undefined> {
+async function loadDemoProposal(context?: vscode.ExtensionContext): Promise<FileProposal | undefined> {
   const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) return undefined;
-  try {
-    const raw = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, 'fixtures', 'demo-proposal.json'));
-    return proposalFromFixture(JSON.parse(new TextDecoder('utf-8').decode(raw)) as DemoFixture);
-  } catch {
-    return undefined;
+  if (folder) {
+    try {
+      const raw = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, 'fixtures', 'demo-proposal.json'));
+      return proposalFromFixture(JSON.parse(new TextDecoder('utf-8').decode(raw)) as DemoFixture);
+    } catch {
+      // workspace lookup failed, fall through to extensionUri fallback
+    }
   }
+  if (context?.extensionUri) {
+    try {
+      const raw = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(context.extensionUri, 'fixtures', 'demo-proposal.json'));
+      return proposalFromFixture(JSON.parse(new TextDecoder('utf-8').decode(raw)) as DemoFixture);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
-export function deactivate(): void {
+export async function deactivate(): Promise<void> {
+  if (activeRuntime) {
+    const rt = activeRuntime;
+    activeRuntime = undefined;
+    await rt.stop();
+  }
 }
 
 export function registerDemoDiffCommand(context: vscode.ExtensionContext, reviewer?: DiffReviewer): void {

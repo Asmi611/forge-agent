@@ -19,6 +19,16 @@
     "configuration": {
       "title": "Forge",
       "properties": {
+        "forge.useMocks": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, use the built-in mock engine instead of connecting to TrueForge."
+        },
+        "forge.forgeDir": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the forge configuration directory (defaults to the forge directory inside the extension)."
+        },
         "forge.context.weights.path": {
           "type": "number",
           "default": 3,

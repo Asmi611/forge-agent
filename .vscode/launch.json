@@ -20,11 +20,8 @@
       "request": "launch",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}",
-        "${workspaceFolder}/../flask"
+        "${workspaceFolder}/../flask-demo/flask-A"
       ],
-      "env": {
-        "FORGE_USE_MOCKS": "false"
-      },
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
       ],
