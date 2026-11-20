@@ -563,8 +563,8 @@ describe('McpToolServer HTTP Server & Tool Registry', () => {
           },
         },
       });
-      expect(resCmd.body.result.isError).toBe(true);
-      expect(resCmd.body.result.content[0].text).toContain('runCommand handler deferred to Milestone E-10');
+      expect(resCmd.body.result.isError).toBeFalsy();
+      expect(resCmd.body.result.content[0].text).toContain('exit code: 0');
     });
 
     it('supports pluggable handlers for future milestones', async () => {
