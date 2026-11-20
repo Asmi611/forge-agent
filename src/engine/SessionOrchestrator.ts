@@ -49,6 +49,10 @@ import {
   type ClassifiedError,
   redactToken,
 } from './ResilienceManager.ts';
+import {
+  LoopGuard,
+  LOOP_GUARD_STOP_MESSAGE,
+} from './loopGuard.ts';
 
 /**
  * Pluggable logger interface for SessionOrchestrator transitions and diagnostics.
@@ -94,6 +98,7 @@ interface RunContext {
   approvalBridge: ApprovalBridge;
   originalInput: unknown[];
   primaryFailure?: ClassifiedError | ForgeError;
+  loopGuard: LoopGuard;
 }
 
 /**
@@ -307,6 +312,7 @@ export class SessionOrchestrator implements EngineApi {
                 initialTokens: 0,
                 approvalBridge: new ApprovalBridge(this.host),
                 originalInput: [],
+                loopGuard: new LoopGuard({ clock: this.clock }),
               };
 
               this.activeContext = runContext;
@@ -522,10 +528,43 @@ export class SessionOrchestrator implements EngineApi {
 
               const mapResult = mapRawEvent(raw, ctx.mapperState);
               for (const ev of mapResult.events) {
+                if (ev.type === 'tool.call') {
+                  if (ev.tool === 'proposeEdit' || ev.tool === 'createFile') {
+                    // Edits reset repetition history
+                    ctx.loopGuard.reset();
+                  } else {
+                    const loopCheck = ctx.loopGuard.record(ev.tool, ev.args);
+                    if (loopCheck.stop) {
+                      this.log('run:loop_guard_stopped', {
+                        runId: ctx.runId,
+                        tool: ev.tool,
+                        reason: loopCheck.reason,
+                      });
+                      terminalEncountered = {
+                        type: 'run.failed',
+                        error: {
+                          kind: 'stuck',
+                          message: LOOP_GUARD_STOP_MESSAGE,
+                          retryable: false,
+                        },
+                      };
+                    }
+                  }
+                }
+                if (ev.type === 'proposal.created') {
+                  ctx.loopGuard.reset();
+                }
                 if (ev.type === 'tool.call' || ev.type === 'proposal.created') {
                   sideEffectsOccurredInAttempt = true;
                 }
                 ctx.queue.push(ev, ctx.epoch);
+                if (terminalEncountered) {
+                  break;
+                }
+              }
+
+              if (terminalEncountered) {
+                break;
               }
 
               // Sequence gap handling
@@ -582,6 +621,7 @@ export class SessionOrchestrator implements EngineApi {
                     ctx.abortController.signal
                   );
                   hasResumedFromPause = true;
+                  ctx.loopGuard.reset();
                 } catch (err: unknown) {
                   if (ctx.isCancelled || ctx.abortController.signal.aborted) {
                     return;
@@ -638,6 +678,7 @@ export class SessionOrchestrator implements EngineApi {
                         ctx.abortController.signal
                       );
                       hasResumedFromPause = true;
+                      ctx.loopGuard.reset();
                     } catch (err: unknown) {
                       if (ctx.isCancelled || ctx.abortController.signal.aborted) {
                         return;
@@ -856,6 +897,7 @@ export class SessionOrchestrator implements EngineApi {
       ctx.sessionId = null;
       ctx.approvalBridge = new ApprovalBridge(this.host);
       ctx.mapperState = createEventMapperState();
+      ctx.loopGuard.reset();
 
       return true;
     }
