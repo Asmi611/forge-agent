@@ -85,6 +85,23 @@ export function isQuotaExceeded(status?: number, message = ''): boolean {
 }
 
 /**
+ * Checks whether an error message indicates an invalid or revoked API key safely without throwing.
+ * Case-insensitive, safely handles undefined, null, or non-string inputs.
+ */
+export function isInvalidApiKeyError(message?: unknown): boolean {
+  if (typeof message !== 'string' || message.trim().length === 0) {
+    return false;
+  }
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('api key not valid') ||
+    lower.includes('invalid api key') ||
+    lower.includes('api_key_invalid') ||
+    lower.includes('invalid_api_key')
+  );
+}
+
+/**
  * Result of error classification.
  */
 export interface ClassifiedError extends ForgeError {
@@ -200,7 +217,7 @@ export class ResilienceManager {
     if (err instanceof HttpError) {
       const status = err.status;
 
-      if (status === 401 || status === 403) {
+      if (status === 401 || status === 403 || (status === 400 && isInvalidApiKeyError(err.message))) {
         return {
           kind: 'auth',
           message: err.message,
@@ -263,7 +280,11 @@ export class ResilienceManager {
     }
 
     // 3. String errors or turn.done state error messages
-    const msg = err instanceof Error ? err.message : String(err ?? 'Unknown error');
+    const msg = typeof err === 'string'
+      ? err
+      : (err && typeof (err as Error).message === 'string')
+      ? (err as Error).message
+      : String(err ?? 'Unknown error');
     const lower = msg.toLowerCase();
 
     // Model-side text inside turn.done is NOT TrueForge down (Fact: TrueForge is streaming to us)
@@ -276,7 +297,13 @@ export class ResilienceManager {
       };
     }
 
-    if (lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') || lower.includes('forbidden')) {
+    if (
+      lower.includes('401') ||
+      lower.includes('403') ||
+      lower.includes('unauthorized') ||
+      lower.includes('forbidden') ||
+      isInvalidApiKeyError(msg)
+    ) {
       return {
         kind: 'auth',
         message: msg,
