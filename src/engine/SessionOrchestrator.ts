@@ -1145,7 +1145,7 @@ export class SessionOrchestrator implements EngineApi {
       ];
       let effectivePrompt = inlineReq.prompt;
       if (inlineReq.selectedText && inlineReq.selectedText.trim().length > 0) {
-        effectivePrompt = `${inlineReq.prompt}\n\nThe selected code is provided, propose the edit directly with proposeEdit, do not search or read first.`;
+        effectivePrompt = `${inlineReq.prompt}\n\nThe selected code is provided, propose the edit directly with proposeEdit, then finish; do not search, read files, or run any command or tests.`;
       }
       return this.client.userMessageInput(effectivePrompt, blocks);
     }
