@@ -23,6 +23,9 @@
         "--disable-extensions",
         "${workspaceFolder}/../flask-demo/flask-A"
       ],
+      "env": {
+        "PATH": "${workspaceFolder}/../flask-demo/flask-A/.venv/Scripts;${env:PATH}"
+      },
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
       ],
@@ -36,6 +39,9 @@
         "--extensionDevelopmentPath=${workspaceFolder}",
         "${workspaceFolder}/../flask-demo/flask-A"
       ],
+      "env": {
+        "PATH": "${workspaceFolder}/../flask-demo/flask-A/.venv/Scripts;${env:PATH}"
+      },
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
       ],
@@ -50,6 +56,9 @@
         "--disable-extensions",
         "${workspaceFolder}/../flask-demo/flask-B"
       ],
+      "env": {
+        "PATH": "${workspaceFolder}/../flask-demo/flask-B/.venv/Scripts;${env:PATH}"
+      },
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
       ],
@@ -64,6 +73,9 @@
         "--disable-extensions",
         "${workspaceFolder}/../flask-demo/flask-C"
       ],
+      "env": {
+        "PATH": "${workspaceFolder}/../flask-demo/flask-C/.venv/Scripts;${env:PATH}"
+      },
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
       ],
