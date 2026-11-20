@@ -47,12 +47,38 @@ The two sides meet only at `src/types/contract.ts`.
 - **Cumulative budget (V2.3.4)**: ONE `RunBudget` per run counts everything that enters the model's context from our side: the seed, the @mentions and every tool result. `runToolBudgetTokens` defaults to 30 000; the seed (≤ 3 000) and mentions (all together ≤ 6 000, excess becomes an outline) are charged to it at run start. Limits scale with the model: `effective = min(configured, fraction × modelContextTokens)` with fractions run 25 %, seed 5 %, mentions 5 %; default `modelContextTokens` 128 000, set 8 000–16 000 for a small local model (`forge/models.local.json`). An identical repeat read `(path, range)` or search query is answered with a one-line "already provided earlier in this run" (~20 tokens). Past 80% it appends "budget low: wrap up"; past 100% tools return `budget exhausted: call reportContext then propose changes`. Explorer-subagent reads pass through our MCP server and are counted (a conservative over-count: they do not enter the main agent's context). A failover replay starts a fresh session, so the budget resets and seed + mentions are re-charged. Emits `budget` events for the UI meter.
 
 ## 4. The approval-gated proposal lifecycle (core design)
-TrueForge documents: when a gated tool is requested the harness does **not** execute it; it emits `tool.approval_required`, **finishes the turn**, and waits. The client resumes with a new turn whose input contains one `user.tool_approval` item per pending call: `{type, thread_id, tool_call_id, approval:{status:"allow"|"deny", reason?}}`. Turns chain automatically (`previous_turn_id: "auto"`); deny reason becomes the tool result.
+TrueForge protocol: when a gated tool (`proposeEdit`, `createFile`) is requested, the harness does **not** execute it; it pauses and emits `tool.approval_required` with the pending tool call IDs. The extension client resolves the human review decisions and submits them by POSTing an events payload to `/api/v1/sessions/${sessionId}/turns/${turnId}/events` (`ForgeClient.submitApprovals`), submitting one `user.tool_approval` item per pending call:
+
+```json
+{
+  "events": [
+    {
+      "type": "user.tool_approval",
+      "thread_id": "main",
+      "tool_call_id": "call_abc123",
+      "approval": {
+        "status": "allow"
+      }
+    },
+    {
+      "type": "user.tool_approval",
+      "thread_id": "main",
+      "tool_call_id": "call_def456",
+      "approval": {
+        "status": "deny",
+        "reason": "User rejected all changes to <path>"
+      }
+    }
+  ]
+}
+```
+
+The **same turn's stream continues**, and TrueForge delivers truthful tool execution results back to the active agent.
 
 Mapping (`proposeEdit`/`createFile` configured to require approval):
 ```
-Agent calls proposeEdit(path, edits)                      [turn N runs]
- → TrueForge: tool.approval_required (turn N ends, required_actions = [..])
+Agent calls proposeEdit(path, edits)                      [turn N stream running]
+ → TrueForge: tool.approval_required (turn N pauses, required_actions = [..])
  → engine: for each pending call
         snapshot = host.snapshot(path)                    (text, version, dirty, sha256)
         proposedContent = applyEdits(snapshot.text, edits) (error → see §4.2)
@@ -64,8 +90,8 @@ Agent calls proposeEdit(path, edits)                      [turn N runs]
  → engine: per pending call
         ≥1 hunk applied  → approval allow   (tool runs; handler returns the recorded decision summary)
         none applied     → approval deny, reason "User rejected all changes to <path>" (or stale/apply_failed text)
-      send ONE new turn with all approvals                [turn N+1 runs; agent sees truthful results]
- → agent may run tests (disk now has the changes), report, or propose fixes (→ another pause)
+      POST approvals to /api/v1/sessions/{sessionId}/turns/{turnId}/events [same turn continues; agent sees truthful results]
+ → agent may run tests (disk now has the changes), report, or propose fixes (→ another pause or turn.done)
 ```
 ### 4.1 Truthful tool results
 The MCP handler of `proposeEdit` is a **no-write acknowledgement**. It resolves the decision record (see below; TTL 30 min, one-time consumption) and returns: `Applied 2 of 3 hunks to src/x.py (rejected: h2). The file on disk now contains only the accepted hunks. Re-read before editing again.` No record → returns an error string (never silently "ok").
@@ -78,7 +104,7 @@ The MCP handler of `proposeEdit` is a **no-write acknowledgement**. It resolves 
 
 **Lookup context.** The DecisionStore is owned by the SessionOrchestrator and scoped to the single active run (one-active-run invariant), so it holds the active `sessionId`; the handler does not need to supply it. Rule 2(a) call-id lookup is `lookup({toolCallId, threadId?})`: `sessionId` comes from the store, `threadId` from the request if present, otherwise the store searches all threads of the active session for that `toolCallId` (a TrueForge call id is unique within a session; if more than one thread matches, return `correlation_ambiguous`). Rule 2(b) is `lookup({tool, path, argsHash})` over live records of the active session. A request arriving when no run is active returns the error string `no active run`. **Validation on every path:** after any lookup, including the exact call-id path, the handler recomputes `argsHash` from the incoming tool name, path and payload and compares it with the stored record; on mismatch it returns an error string, logs `args_mismatch`, and does NOT consume the record.
 
-**Grouped proposal mapping (V2.3.5).** One visible `FileProposal` can answer several TrueForge tool calls. `FileProposal.callIds` lists every `tool_call_id` folded into it (`callId === callIds[0]`). The UI sees one proposal and returns one decision for it via `reviewDone`. The engine's `ProposalStore` maps `proposalId → callIds[]`; on `reviewDone` it creates one pending approval item per id, all with that same decision (allow only if `applied && ≥1 accepted hunk`, otherwise deny with the same reason), and sends them together in one `user.tool_approval` turn. The UI never needs the ids; they exist in the contract so fixtures, logs and tests can prove the mapping. Test: two identical calls → one proposal with `callIds.length === 2` → both receive the decision.
+**Grouped proposal mapping (V2.3.5).** One visible `FileProposal` can answer several TrueForge tool calls. `FileProposal.callIds` lists every `tool_call_id` folded into it (`callId === callIds[0]`). The UI sees one proposal and returns one decision for it via `reviewDone`. The engine's `ProposalStore` maps `proposalId → callIds[]`; on `reviewDone` it creates one pending approval item per id, all with that same decision (allow only if `applied && ≥1 accepted hunk`, otherwise deny with the same reason), and sends them together via `ForgeClient.submitApprovals` to `/api/v1/sessions/${sessionId}/turns/${turnId}/events`. The UI never needs the ids; they exist in the contract so fixtures, logs and tests can prove the mapping. Test: two identical calls → one proposal with `callIds.length === 2` → both receive the decision.
 
 **Why denied calls matter:** a `deny` never reaches the MCP handler, so the engine closes that record itself when it sends the deny; otherwise a stale record could be picked up by a later identical call.
 

@@ -6,7 +6,7 @@ dist/
 .freebuff/
 .env
 .env.*
-forge/*.local.json
+forge/*.local.*
 forge/models.yaml
 coverage/
 .forge-tmp/
