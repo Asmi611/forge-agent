@@ -210,6 +210,7 @@ export async function createRuntime(options: CreateRuntimeOptions): Promise<Crea
         host,
         client,
         proposalProvider: orchestrator,
+        budgetProvider: () => orchestrator.getActiveBudget(),
         name: config.setup.mcp.name,
         port: config.setup.mcp.port,
         token: effectiveToken,
