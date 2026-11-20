@@ -69,4 +69,18 @@ describe('Canonical Agent Instructions and Specification', () => {
     expect(spec.instructions).not.toMatch(/\bcli\b/i);
     expect(spec.instructions).not.toMatch(/\bjson\b/i);
   });
+
+  it('guides the agent toward efficient exploration and batched independent tool calls', () => {
+    const mainContent = fs.readFileSync(mainInstructionsPath, 'utf-8');
+    const rawSpec = fs.readFileSync(specPath, 'utf-8');
+    const spec = JSON.parse(rawSpec);
+
+    expect(mainContent).toMatch(/Explore efficiently/i);
+    expect(mainContent).toMatch(/six searches or reads/i);
+    expect(spec.instructions).toMatch(/Explore efficiently/i);
+    expect(spec.instructions).toMatch(/six searches or reads/i);
+
+    expect(mainContent).toMatch(/independent.*together in one step/i);
+    expect(spec.instructions).toMatch(/independent.*together in one step/i);
+  });
 });
