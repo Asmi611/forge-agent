@@ -1510,3 +1510,323 @@ describe('scripts/engine-cli (runCli)', () => {
     expect(stderrLines.join('\n')).toContain('Stream ended unexpectedly without a terminal event');
   });
 });
+
+describe('SessionOrchestrator - LoopGuard Repetition Integration (Task E-11)', () => {
+  it('readFile same file 3 times with no change trips loop guard with exact message and exactly one terminal event', async () => {
+    const config = createMockConfig();
+    const host = createMockHost();
+    const client = new ForgeClient(config.setup);
+
+    vi.spyOn(client, 'createSession').mockResolvedValue('session-loop-read');
+
+    async function* turnEvents() {
+      yield {
+        id: '1',
+        event: 'message',
+        data: { type: 'turn.created', turn_id: 'turn-loop-1' },
+        rawData: '',
+      } as RawEvent;
+
+      // 1st readFile
+      yield {
+        id: '2',
+        event: 'message',
+        data: {
+          type: 'model.message.delta',
+          id: 'msg_1',
+          finish_reason: 'tool_calls',
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call_rf_1',
+              type: 'function',
+              function: {
+                name: 'readFile',
+                arguments: JSON.stringify({ path: 'src/seed.ts' }),
+              },
+            },
+          ],
+        },
+        rawData: '',
+      } as RawEvent;
+      yield {
+        id: '3',
+        event: 'message',
+        data: {
+          type: 'tool.response',
+          id: 'resp_1',
+          tool_call_id: 'call_rf_1',
+          content: 'file contents 1',
+        },
+        rawData: '',
+      } as RawEvent;
+
+      // 2nd readFile (identical)
+      yield {
+        id: '4',
+        event: 'message',
+        data: {
+          type: 'model.message.delta',
+          id: 'msg_2',
+          finish_reason: 'tool_calls',
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call_rf_2',
+              type: 'function',
+              function: {
+                name: 'readFile',
+                arguments: JSON.stringify({ path: 'src/seed.ts' }),
+              },
+            },
+          ],
+        },
+        rawData: '',
+      } as RawEvent;
+      yield {
+        id: '5',
+        event: 'message',
+        data: {
+          type: 'tool.response',
+          id: 'resp_2',
+          tool_call_id: 'call_rf_2',
+          content: 'file contents 2',
+        },
+        rawData: '',
+      } as RawEvent;
+
+      // 3rd readFile (identical -> trips LoopGuard)
+      yield {
+        id: '6',
+        event: 'message',
+        data: {
+          type: 'model.message.delta',
+          id: 'msg_3',
+          finish_reason: 'tool_calls',
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call_rf_3',
+              type: 'function',
+              function: {
+                name: 'readFile',
+                arguments: JSON.stringify({ path: 'src/seed.ts' }),
+              },
+            },
+          ],
+        },
+        rawData: '',
+      } as RawEvent;
+
+      // Subsequent event that should never be processed
+      yield {
+        id: '7',
+        event: 'turn.done',
+        data: { type: 'turn.done', state: { status: 'done', output: 'Done' } },
+        rawData: '',
+      } as RawEvent;
+    }
+
+    vi.spyOn(client, 'createTurn').mockImplementation(() => turnEvents());
+
+    const orchestrator = new SessionOrchestrator(host, client, config);
+    const events: EngineEvent[] = [];
+
+    for await (const ev of orchestrator.runAgent({ prompt: 'test repetition', mentions: [] })) {
+      events.push(ev);
+    }
+
+    // Must emit run.failed with exact kind 'stuck' and message
+    const terminalEvents = events.filter(
+      (e) => e.type === 'run.completed' || e.type === 'run.cancelled' || e.type === 'run.failed'
+    );
+    expect(terminalEvents).toHaveLength(1);
+
+    const terminal = terminalEvents[0];
+    expect(terminal.type).toBe('run.failed');
+    if (terminal.type === 'run.failed') {
+      expect(terminal.error.kind).toBe('stuck');
+      expect(terminal.error.message).toBe('The agent seems stuck (repeating the same step). Stopped safely.');
+      expect(terminal.error.retryable).toBe(false);
+    }
+  });
+
+  it('"pytest, edit, pytest again" does NOT trip loop guard because edits reset repetition history', async () => {
+    const config = createMockConfig();
+    const host = createMockHost();
+    const client = new ForgeClient(config.setup);
+
+    vi.spyOn(client, 'createSession').mockResolvedValue('session-loop-pytest');
+
+    const pytestArgs = { file: 'pytest', args: ['tests/test_cli.py', '-q'] };
+
+    async function* turnEvents() {
+      yield {
+        id: '1',
+        event: 'message',
+        data: { type: 'turn.created', turn_id: 'turn-loop-2' },
+        rawData: '',
+      } as RawEvent;
+
+      // 1. First runCommand (pytest)
+      yield {
+        id: '2',
+        event: 'message',
+        data: {
+          type: 'model.message.delta',
+          id: 'msg_pt1',
+          finish_reason: 'tool_calls',
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call_cmd_1',
+              type: 'function',
+              function: {
+                name: 'runCommand',
+                arguments: JSON.stringify(pytestArgs),
+              },
+            },
+          ],
+        },
+        rawData: '',
+      } as RawEvent;
+      yield {
+        id: '3',
+        event: 'message',
+        data: {
+          type: 'tool.response',
+          id: 'resp_pt1',
+          tool_call_id: 'call_cmd_1',
+          content: 'FAILED tests/test_cli.py',
+        },
+        rawData: '',
+      } as RawEvent;
+
+      // 2. ProposeEdit (resets repetition guard)
+      yield {
+        id: '4',
+        event: 'message',
+        data: {
+          type: 'model.message.delta',
+          id: 'msg_edit',
+          finish_reason: 'tool_calls',
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call_edit_1',
+              type: 'function',
+              function: {
+                name: 'proposeEdit',
+                arguments: JSON.stringify({
+                  path: 'src/file.ts',
+                  edits: [{ oldText: 'old', newText: 'new' }],
+                  rationale: 'fix test',
+                }),
+              },
+            },
+          ],
+        },
+        rawData: '',
+      } as RawEvent;
+
+      // 3. Second runCommand with identical pytest args
+      yield {
+        id: '5',
+        event: 'message',
+        data: {
+          type: 'model.message.delta',
+          id: 'msg_pt2',
+          finish_reason: 'tool_calls',
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call_cmd_2',
+              type: 'function',
+              function: {
+                name: 'runCommand',
+                arguments: JSON.stringify(pytestArgs),
+              },
+            },
+          ],
+        },
+        rawData: '',
+      } as RawEvent;
+      yield {
+        id: '6',
+        event: 'message',
+        data: {
+          type: 'tool.response',
+          id: 'resp_pt2',
+          tool_call_id: 'call_cmd_2',
+          content: '55 passed in 0.12s',
+        },
+        rawData: '',
+      } as RawEvent;
+
+      // 4. Third runCommand with identical pytest args (still only 2nd runCommand since edit reset)
+      yield {
+        id: '7',
+        event: 'message',
+        data: {
+          type: 'model.message.delta',
+          id: 'msg_pt3',
+          finish_reason: 'tool_calls',
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call_cmd_3',
+              type: 'function',
+              function: {
+                name: 'runCommand',
+                arguments: JSON.stringify(pytestArgs),
+              },
+            },
+          ],
+        },
+        rawData: '',
+      } as RawEvent;
+      yield {
+        id: '8',
+        event: 'message',
+        data: {
+          type: 'tool.response',
+          id: 'resp_pt3',
+          tool_call_id: 'call_cmd_3',
+          content: '55 passed in 0.12s',
+        },
+        rawData: '',
+      } as RawEvent;
+
+      // Done
+      yield {
+        id: '9',
+        event: 'turn.done',
+        data: {
+          type: 'turn.done',
+          state: { status: 'done', output: 'All tests pass!' },
+        },
+        rawData: '',
+      } as RawEvent;
+    }
+
+    vi.spyOn(client, 'createTurn').mockImplementation(() => turnEvents());
+
+    const orchestrator = new SessionOrchestrator(host, client, config);
+    const events: EngineEvent[] = [];
+
+    for await (const ev of orchestrator.runAgent({ prompt: 'test pytest retry after edit', mentions: [] })) {
+      events.push(ev);
+    }
+
+    // Must NOT fail with stuck; must complete normally
+    const terminalEvents = events.filter(
+      (e) => e.type === 'run.completed' || e.type === 'run.cancelled' || e.type === 'run.failed'
+    );
+    expect(terminalEvents).toHaveLength(1);
+    expect(terminalEvents[0]).toEqual({
+      type: 'run.completed',
+      summary: 'All tests pass!',
+    });
+  });
+});
+

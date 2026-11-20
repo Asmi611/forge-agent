@@ -143,7 +143,8 @@ export class ApprovalBridge {
           }
 
           // Pre-deny this call without UI review
-          const denyItem = createDenyApproval(pause.callId, applyRes.reason, pause.threadId);
+          const preDenyReason = `Technical failure: edit matching failed against current file (not a user rejection): ${applyRes.reason}. Re-read the file and propose again only if needed.`;
+          const denyItem = createDenyApproval(pause.callId, preDenyReason, pause.threadId);
           this.preDeniedApprovals.push(denyItem);
 
           // Record in DecisionStore (closed when deny is submitted)
@@ -155,7 +156,7 @@ export class ApprovalBridge {
             toolName: 'proposeEdit',
             path,
             argsHash,
-            decision: { status: 'deny', summary: applyRes.reason },
+            decision: { status: 'deny', summary: preDenyReason },
           });
           continue;
         }
@@ -308,11 +309,11 @@ export class ApprovalBridge {
       let denyReason: string | undefined;
       if (!isAllowed) {
         if (item.failure?.kind === 'stale') {
-          denyReason =
-            item.failure.message ||
-            'File changed since proposal; re-read and re-propose';
-        } else if (item.failure?.kind === 'apply_failed') {
-          denyReason = item.failure.message || 'Apply failed to write accepted hunks';
+          const detail = item.failure.message || 'File changed since proposal';
+          denyReason = `Technical failure (file changed on disk, not a user rejection): ${detail}. Re-read the file and propose again only if needed.`;
+        } else if (item.failure?.kind === 'apply_failed' || item.failure?.kind === 'restore_failed') {
+          const detail = item.failure.message || 'Apply failed to write accepted hunks';
+          denyReason = `Technical failure applying changes (not a user rejection): ${detail}. Re-read the file and propose again only if needed.`;
         } else {
           denyReason = proposal.isNewFile
             ? `User rejected creation of ${proposal.path}`

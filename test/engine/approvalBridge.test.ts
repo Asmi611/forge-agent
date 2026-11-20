@@ -590,7 +590,7 @@ describe('ApprovalBridge and Turn Resumption (Milestone E-06)', () => {
           tool_call_id: 'call_stale_1',
           approval: {
             status: 'deny',
-            reason: 'File changed since proposal; re-read and re-propose',
+            reason: 'Technical failure (file changed on disk, not a user rejection): File changed since proposal; re-read and re-propose. Re-read the file and propose again only if needed.',
           },
         },
       ],
@@ -691,7 +691,7 @@ describe('ApprovalBridge and Turn Resumption (Milestone E-06)', () => {
           tool_call_id: 'call_af_1',
           approval: {
             status: 'deny',
-            reason: 'Custom write failure',
+            reason: 'Technical failure applying changes (not a user rejection): Custom write failure. Re-read the file and propose again only if needed.',
           },
         },
       ],
