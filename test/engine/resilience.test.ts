@@ -33,6 +33,7 @@ import {
   isQuotaExceeded,
   computeBackoffDelay,
   redactToken,
+  isInvalidApiKeyError,
 } from '../../src/engine/ResilienceManager.ts';
 import {
   ForgeClient,
@@ -213,6 +214,31 @@ describe('ResilienceManager - Pure Unit Tests', () => {
     });
   });
 
+  describe('isInvalidApiKeyError', () => {
+    it('detects invalid api key phrases case-insensitively', () => {
+      expect(isInvalidApiKeyError('API key not valid. Please pass a valid API key.')).toBe(true);
+      expect(isInvalidApiKeyError('error: api key not valid')).toBe(true);
+      expect(isInvalidApiKeyError('INVALID API KEY provided')).toBe(true);
+      expect(isInvalidApiKeyError('Error code: API_KEY_INVALID')).toBe(true);
+      expect(isInvalidApiKeyError('status: invalid_api_key')).toBe(true);
+    });
+
+    it('returns false for generic errors and bad parameters', () => {
+      expect(isInvalidApiKeyError('invalid parameter: max_tokens')).toBe(false);
+      expect(isInvalidApiKeyError('bad request: missing prompt')).toBe(false);
+      expect(isInvalidApiKeyError('Internal server error')).toBe(false);
+    });
+
+    it('safely returns false for non-string, null, or undefined values without throwing', () => {
+      expect(isInvalidApiKeyError(undefined)).toBe(false);
+      expect(isInvalidApiKeyError(null)).toBe(false);
+      expect(isInvalidApiKeyError(123)).toBe(false);
+      expect(isInvalidApiKeyError({})).toBe(false);
+      expect(isInvalidApiKeyError('')).toBe(false);
+      expect(isInvalidApiKeyError('   ')).toBe(false);
+    });
+  });
+
   describe('classifyError wire shapes', () => {
     const resilience = new ResilienceManager();
     const baseUrl = 'http://127.0.0.1:8790';
@@ -271,6 +297,43 @@ describe('ResilienceManager - Pure Unit Tests', () => {
       const classified403 = resilience.classify(err403, baseUrl);
       expect(classified403.kind).toBe('auth');
       expect(classified403.retryable).toBe(false);
+    });
+
+    it('classifies HttpError 400 with invalid API key as auth and non-retryable', () => {
+      // Gemini provider error shape
+      const gemini400 = new HttpError(400, 'API key not valid. Please pass a valid API key.');
+      const classifiedGemini = resilience.classify(gemini400, baseUrl);
+      expect(classifiedGemini.kind).toBe('auth');
+      expect(classifiedGemini.retryable).toBe(false);
+      expect(classifiedGemini.status).toBe(400);
+
+      // Alternate provider phrasing
+      const alt400 = new HttpError(400, 'Invalid API_KEY_INVALID provided');
+      const classifiedAlt = resilience.classify(alt400, baseUrl);
+      expect(classifiedAlt.kind).toBe('auth');
+      expect(classifiedAlt.retryable).toBe(false);
+    });
+
+    it('keeps generic HttpError 400 (e.g. invalid parameter) as unknown and non-retryable', () => {
+      const err400Param = new HttpError(400, 'Invalid argument: max_tokens must be positive');
+      const classified = resilience.classify(err400Param, baseUrl);
+      expect(classified.kind).toBe('unknown');
+      expect(classified.retryable).toBe(false);
+      expect(classified.status).toBe(400);
+    });
+
+    it('classifies string/turn.done error with invalid API key as auth and non-retryable', () => {
+      const strErr = '[model error] 400 API key not valid. Please pass a valid API key.';
+      const classified = resilience.classify(strErr, baseUrl);
+      expect(classified.kind).toBe('auth');
+      expect(classified.retryable).toBe(false);
+    });
+
+    it('keeps generic string error with 400 invalid parameter as unknown', () => {
+      const strErr = '400 Invalid argument: max_tokens';
+      const classified = resilience.classify(strErr, baseUrl);
+      expect(classified.kind).toBe('unknown');
+      expect(classified.retryable).toBe(false);
     });
 
     it('classifies HttpError 404 as model and non-retryable', () => {
@@ -1141,5 +1204,77 @@ describe('SessionOrchestrator - Deterministic Outcome Table (V2.3.5)', () => {
 
     expect(recordedPrompts[1]).toContain('Refactor nothing');
     expect(recordedPrompts[1]).not.toContain('The selected code is provided');
+  });
+
+  it('fails over immediately with reason auth and 0 retries when primary encounters HTTP 400 invalid API key', async () => {
+    const config = createMockConfig();
+    const host = createMockHost();
+    const client = new ForgeClient(config.setup);
+
+    vi.spyOn(client, 'createSession').mockImplementation(async (agentName) => {
+      return agentName === 'primary-agent' ? 'sess-primary-auth' : 'sess-fallback-auth';
+    });
+
+    const sleepCalls: number[] = [];
+    const mockSleep = async (ms: number) => {
+      sleepCalls.push(ms);
+    };
+
+    vi.spyOn(client, 'createTurn').mockImplementation((sessionId) => {
+      if (sessionId === 'sess-primary-auth') {
+        // Primary fails with Gemini HTTP 400 invalid API key error
+        async function* failingStream() {
+          throw new HttpError(400, 'API key not valid. Please pass a valid API key.');
+        }
+        return failingStream();
+      }
+
+      // Fallback succeeds
+      async function* fallbackStream() {
+        yield {
+          id: '1',
+          event: 'message',
+          data: {
+            type: 'turn.done',
+            id: 'td_fb_auth',
+            state: { status: 'done', output: 'Succeeded on fallback model' },
+          },
+          rawData: '',
+        } as RawEvent;
+      }
+      return fallbackStream();
+    });
+
+    const orchestrator = new SessionOrchestrator(host, client, config, {
+      sleep: mockSleep,
+      jitter: false,
+    });
+
+    const events: EngineEvent[] = [];
+    for await (const ev of orchestrator.runAgent({ prompt: 'test invalid api key failover', mentions: [] })) {
+      events.push(ev);
+    }
+
+    // Must NOT retry: 0 sleep calls, 0 retry events
+    expect(sleepCalls).toHaveLength(0);
+    expect(events.filter((e) => e.type === 'retry')).toHaveLength(0);
+
+    // Failover event emitted with exact reason 'auth'
+    const failoverEv = events.find((e) => e.type === 'failover') as {
+      type: 'failover';
+      from: string;
+      to: string;
+      reason: string;
+    };
+    expect(failoverEv).toBeDefined();
+    expect(failoverEv.from).toBe('primary-agent');
+    expect(failoverEv.to).toBe('fallback-agent');
+    expect(failoverEv.reason).toBe('auth');
+
+    // Run completes on fallback
+    expect(events[events.length - 1]).toEqual({
+      type: 'run.completed',
+      summary: 'Succeeded on fallback model',
+    });
   });
 });

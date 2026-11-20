@@ -26,6 +26,32 @@
         "${workspaceFolder}/out/**/*.js"
       ],
       "preLaunchTask": "forge: build"
+    },
+    {
+      "name": "Run Extension on Flask B",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "${workspaceFolder}/../flask-demo/flask-B"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/out/**/*.js"
+      ],
+      "preLaunchTask": "forge: build"
+    },
+    {
+      "name": "Run Extension on Flask C",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "${workspaceFolder}/../flask-demo/flask-C"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/out/**/*.js"
+      ],
+      "preLaunchTask": "forge: build"
     }
   ]
 }
