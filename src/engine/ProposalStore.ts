@@ -142,12 +142,12 @@ export class ProposalStore {
 
         const oldText = diffHunk.lines
           .filter((line) => line.startsWith('-'))
-          .map((line) => line.slice(1))
+          .map((line) => line.slice(1).replace(/\r$/, ''))
           .join('\n');
 
         const newText = diffHunk.lines
           .filter((line) => line.startsWith('+'))
-          .map((line) => line.slice(1))
+          .map((line) => line.slice(1).replace(/\r$/, ''))
           .join('\n');
 
         return {
