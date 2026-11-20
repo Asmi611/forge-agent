@@ -48,6 +48,12 @@ import {
   reportContextInputSchema,
   handleReportContext,
 } from './tools/reportContext.ts';
+import {
+  RUN_COMMAND_TOOL_NAME,
+  RUN_COMMAND_TOOL_DESCRIPTION,
+  runCommandInputSchema,
+  handleRunCommand,
+} from './tools/runCommand.ts';
 
 /** Default MCP server listening port. */
 export const DEFAULT_MCP_PORT = 8792;
@@ -83,11 +89,7 @@ export const createFileInputSchema = z.object({
 });
 
 /** Frozen contract input schema for runCommand (Milestone E-10). */
-export const runCommandInputSchema = z.object({
-  file: z.string().min(1).describe('Executable name without path separators (e.g. pytest, npm)'),
-  args: z.array(z.string()).describe('Array of command line arguments'),
-  cwd: z.string().optional().describe('Workspace directory to execute command in'),
-});
+export { runCommandInputSchema };
 
 /** Options for configuring McpToolServer. */
 export interface McpToolServerOptions {
@@ -555,27 +557,18 @@ export class McpToolServer {
       }
     );
 
-    // 8. runCommand (Milestone E-10 deferred stub or custom handler)
+    // 8. runCommand (Milestones E-10a / E-10b)
     server.registerTool(
-      'runCommand',
+      RUN_COMMAND_TOOL_NAME,
       {
-        description:
-          'Execute an allowed terminal command within policy tiers.\nUse when running test suites or checking git status after changes.',
+        description: RUN_COMMAND_TOOL_DESCRIPTION,
         inputSchema: runCommandInputSchema,
       },
       async (args) => {
         if (this.customRunCommandHandler) {
           return this.customRunCommandHandler(args, executionContext);
         }
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'runCommand handler deferred to Milestone E-10 (terminalPolicy).',
-            },
-          ],
-          isError: true,
-        };
+        return handleRunCommand(args, executionContext);
       }
     );
 
