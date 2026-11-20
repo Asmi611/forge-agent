@@ -1407,8 +1407,8 @@ describe('ApprovalBridge and Turn Resumption (Milestone E-06)', () => {
       type: 'run.failed',
       error: {
         kind: 'unreachable',
-        message: 'Network error [ECONNRESET]: Connection reset by peer',
-        retryable: true,
+        message: 'Changes already applied to workspace; failover replay disabled to prevent duplicate application.',
+        retryable: false,
       },
     });
   });

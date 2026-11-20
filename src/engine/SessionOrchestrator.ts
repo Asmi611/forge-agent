@@ -22,8 +22,6 @@ import {
 } from './config.ts';
 import {
   ForgeClient,
-  HttpError,
-  NetworkError,
   type ContextBlock,
   type RawEvent,
 } from './ForgeClient.ts';
@@ -46,6 +44,12 @@ import {
 import type { ToolExecutionContext, ToolCallResult } from '../mcp/limits.ts';
 import type { z } from 'zod';
 
+import {
+  ResilienceManager,
+  type ClassifiedError,
+  redactToken,
+} from './ResilienceManager.ts';
+
 /**
  * Pluggable logger interface for SessionOrchestrator transitions and diagnostics.
  */
@@ -63,6 +67,9 @@ export interface OrchestratorOptions {
   logger?: EngineLogger;
   clock?: () => number;
   activeProfile?: 'primary' | 'fallback';
+  resilienceManager?: ResilienceManager;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  jitter?: boolean;
 }
 
 /**
@@ -83,7 +90,10 @@ interface RunContext {
   isConsumerTerminated: boolean;
   isFinalized: boolean;
   usedTokens: number;
+  initialTokens: number;
   approvalBridge: ApprovalBridge;
+  originalInput: unknown[];
+  primaryFailure?: ClassifiedError | ForgeError;
 }
 
 /**
@@ -99,6 +109,7 @@ export class SessionOrchestrator implements EngineApi {
   private readonly config: EngineConfig;
   private readonly logger?: EngineLogger;
   private readonly clock: () => number;
+  private readonly resilience: ResilienceManager;
 
   constructor(
     host: UiHost,
@@ -112,6 +123,15 @@ export class SessionOrchestrator implements EngineApi {
     this.logger = options?.logger;
     this.clock = options?.clock ?? (() => Date.now());
     this.activeProfile = options?.activeProfile ?? 'primary';
+    this.resilience =
+      options?.resilienceManager ??
+      new ResilienceManager({
+        maxRetries: config.setup.retry?.max ?? 3,
+        baseDelayMs: config.setup.retry?.baseDelayMs ?? 1000,
+        clock: this.clock,
+        sleep: options?.sleep,
+        jitter: options?.jitter ?? true,
+      });
   }
 
   /**
@@ -284,7 +304,9 @@ export class SessionOrchestrator implements EngineApi {
                 isConsumerTerminated: false,
                 isFinalized: false,
                 usedTokens: 0,
+                initialTokens: 0,
                 approvalBridge: new ApprovalBridge(this.host),
+                originalInput: [],
               };
 
               this.activeContext = runContext;
@@ -334,7 +356,7 @@ export class SessionOrchestrator implements EngineApi {
   }
 
   /**
-   * Background event pump coordinating session creation, turn streaming, and event mapping.
+   * Background event pump coordinating session creation, turn streaming, retries, and failover.
    */
   private async startRunPump(
     ctx: RunContext,
@@ -354,6 +376,8 @@ export class SessionOrchestrator implements EngineApi {
 
       // 2. Build first turn input
       const input = await this.buildFirstTurnInput(ctx, req);
+      ctx.originalInput = input;
+      ctx.initialTokens = ctx.usedTokens;
 
       if (ctx.isCancelled || ctx.abortController.signal.aborted) {
         return;
@@ -374,178 +398,170 @@ export class SessionOrchestrator implements EngineApi {
         limitTokens: this.config.setup.budgets.runToolBudgetTokens,
       });
 
-      // 4. Create session on active profile agent captured at start
-      const agentName = this.config.setup.agents[ctx.profile];
-      this.log('run:create_session', { runId: ctx.runId, agentName });
+      // 4. Execution loop handling session creation, turn streaming, retries, and failover
+      let attempt = 0;
 
-      let sessionId: string;
-      try {
-        sessionId = await this.client.createSession(agentName);
-      } catch (err: unknown) {
-        if (ctx.isCancelled || ctx.abortController.signal.aborted) {
-          return;
-        }
-        throw err;
-      }
+      while (!ctx.isCancelled && !ctx.abortController.signal.aborted) {
+        // Step A: Ensure active session
+        if (!ctx.sessionId) {
+          const agentName = this.config.setup.agents[ctx.profile];
+          this.log('run:create_session', { runId: ctx.runId, agentName, profile: ctx.profile });
 
-      ctx.sessionId = sessionId;
-      this.log('run:session_created', { runId: ctx.runId, sessionId });
-
-      // Handle cancellation while createSession was pending
-      if (ctx.isCancelled || ctx.abortController.signal.aborted) {
-        this.safeRemoteCancel(sessionId);
-        return;
-      }
-
-      // 4. Stream turn events
-      this.log('run:create_turn', { runId: ctx.runId, sessionId });
-      let turnStream: AsyncIterable<RawEvent> = this.client.createTurn(
-        sessionId,
-        input,
-        ctx.abortController.signal
-      );
-
-      let terminalEncountered: TerminalEvent | null = null;
-      let currentTurnId = '';
-      let lastProcessedEventId: string | undefined = undefined;
-      let hasResumedFromPause = false;
-
-      while (!terminalEncountered && !ctx.isCancelled && !ctx.abortController.signal.aborted) {
-        for await (const raw of turnStream) {
-          if (ctx.isCancelled || ctx.abortController.signal.aborted) {
-            break;
-          }
-
-          // Track turnId and eventId from incoming raw event
-          const rawEvent = raw as RawEvent;
-          const rawData = isPlainObject(rawEvent.data)
-            ? (rawEvent.data as Record<string, unknown>)
-            : isPlainObject(raw)
-            ? (raw as Record<string, unknown>)
-            : null;
-
-          const eventTurnId = typeof rawData?.turn_id === 'string'
-            ? rawData.turn_id
-            : typeof rawData?.turnId === 'string'
-            ? rawData.turnId
-            : undefined;
-          if (eventTurnId) {
-            currentTurnId = eventTurnId;
-          }
-
-          const eventId = typeof rawData?.id === 'string'
-            ? rawData.id
-            : typeof rawEvent?.id === 'string'
-            ? rawEvent.id
-            : undefined;
-          if (eventId) {
-            lastProcessedEventId = eventId;
-          }
-
-          const mapResult = mapRawEvent(raw, ctx.mapperState);
-          for (const ev of mapResult.events) {
-            ctx.queue.push(ev, ctx.epoch);
-          }
-
-          // 4a. Handle sequence gap at completion boundary: log and never treat discarded completion as successful
-          if (mapResult.gap) {
-            this.log('stream:sequence_gap', {
-              runId: ctx.runId,
-              expected: mapResult.gap.expected,
-              received: mapResult.gap.received,
-            });
-            terminalEncountered = {
-              type: 'run.failed',
-              error: {
-                kind: 'unknown',
-                message: `Sequence gap detected at completion boundary (expected ${mapResult.gap.expected}, received ${mapResult.gap.received})`,
-                retryable: false,
-              },
-            };
-            break;
-          }
-
-          // 4b. Coordinate approval pauses via ApprovalBridge (Milestone E-06)
-          if (mapResult.newPauses.length > 0) {
-            this.log('stream:new_pauses', { runId: ctx.runId, count: mapResult.newPauses.length });
-            const pauses = ctx.mapperState.consumePauses();
-            let pauseRes: PauseResolution;
-            try {
-              pauseRes = await ctx.approvalBridge.handlePause(
-                pauses,
-                sessionId,
-                currentTurnId,
-                ctx.abortController.signal,
-                (ev) => ctx.queue.push(ev, ctx.epoch)
-              );
-            } catch (err: unknown) {
-              if (ctx.isCancelled || ctx.abortController.signal.aborted) {
-                return;
-              }
-              throw err;
-            }
-
+          try {
+            ctx.sessionId = await this.client.createSession(agentName);
+          } catch (err: unknown) {
             if (ctx.isCancelled || ctx.abortController.signal.aborted) {
               return;
             }
+            const classified = this.classifyError(err);
 
-            // Submit ALL pending approvals (pre-denied + human-reviewed) together in ONE resume call
-            try {
-              await this.client.submitApprovals(
-                sessionId,
-                currentTurnId,
-                pauseRes.approvals,
-                ctx.abortController.signal
-              );
-              hasResumedFromPause = true;
-            } catch (err: unknown) {
-              if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+            if (classified.isTrueForgeDown) {
+              await this.finalizeRun(ctx, { type: 'run.failed', error: classified }, 'trueforge_down');
+              return;
+            }
+
+            if (classified.retryable && attempt < this.resilience.maxRetries) {
+              attempt++;
+              const delayMs = this.resilience.getDelay(attempt);
+              this.log('run:retry', { attempt, delayMs, kind: classified.kind, stage: 'create_session' });
+              ctx.queue.push({ type: 'retry', attempt, delayMs, kind: classified.kind }, ctx.epoch);
+              try {
+                await this.resilience.sleep(delayMs, ctx.abortController.signal);
+              } catch {
+                await this.finalizeRun(ctx, { type: 'run.cancelled' }, 'cancelled_during_backoff');
                 return;
               }
-              const forgeError = this.classifyError(err);
-              terminalEncountered = { type: 'run.failed', error: forgeError };
-              break;
+              continue;
             }
+
+            const handled = await this.handleTurnError(ctx, classified);
+            if (!handled) return;
+            attempt = 0;
+            continue;
           }
 
-          // 4c. Handle unresolvedPauses if present in mapper API
-          if (mapResult.unresolvedPauses && mapResult.unresolvedPauses.length > 0) {
-            this.log('stream:unresolved_pauses', { runId: ctx.runId, count: mapResult.unresolvedPauses.length });
-            terminalEncountered = {
-              type: 'run.failed',
-              error: {
-                kind: 'unknown',
-                message: `Unresolved approval pause correlation error: ${mapResult.unresolvedPauses.map((u) => u.reason).join('; ')}`,
-                retryable: false,
-              },
-            };
-            break;
+          this.log('run:session_created', { runId: ctx.runId, sessionId: ctx.sessionId });
+          if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+            if (ctx.sessionId) this.safeRemoteCancel(ctx.sessionId);
+            return;
           }
+        }
 
-          // 4d. Call mapTerminal() ONLY for actual terminal wire events (turn.update and turn.done)
-          const eventType = rawData && typeof rawData.type === 'string' ? rawData.type : rawEvent.event;
+        // Step B: Stream turn
+        let sideEffectsOccurredInAttempt = false;
+        // A retry re-sends the exact same input items (user prompt and initial context blocks) to TrueForge within the active session, starting a fresh attempt of the turn because no tool calls or proposals were emitted yet.
+        const turnInput = ctx.originalInput;
+        this.log('run:create_turn', { runId: ctx.runId, sessionId: ctx.sessionId, attempt });
 
-          if (eventType === 'turn.update' || eventType === 'turn.done') {
-            const terminal = mapTerminal(raw);
+        let turnStream: AsyncIterable<RawEvent>;
+        try {
+          turnStream = this.client.createTurn(ctx.sessionId, turnInput, ctx.abortController.signal);
+        } catch (err: unknown) {
+          if (ctx.isCancelled || ctx.abortController.signal.aborted) return;
+          const classified = this.classifyError(err);
+          if (classified.isTrueForgeDown) {
+            await this.finalizeRun(ctx, { type: 'run.failed', error: classified }, 'trueforge_down');
+            return;
+          }
+          if (classified.retryable && attempt < this.resilience.maxRetries) {
+            attempt++;
+            const delayMs = this.resilience.getDelay(attempt);
+            this.log('run:retry', { attempt, delayMs, kind: classified.kind, stage: 'create_turn' });
+            ctx.queue.push({ type: 'retry', attempt, delayMs, kind: classified.kind }, ctx.epoch);
+            try {
+              await this.resilience.sleep(delayMs, ctx.abortController.signal);
+            } catch {
+              await this.finalizeRun(ctx, { type: 'run.cancelled' }, 'cancelled_during_backoff');
+              return;
+            }
+            continue;
+          }
+          const handled = await this.handleTurnError(ctx, classified);
+          if (!handled) return;
+          attempt = 0;
+          continue;
+        }
 
-            // Preserve pause precedence: explicit paused status OR done with non-empty requiredActions is a pause
-            const hasRequiredActions =
-              terminal.outcome === 'done' &&
-              Array.isArray(terminal.requiredActions) &&
-              terminal.requiredActions.length > 0;
+        let terminalEncountered: TerminalEvent | null = null;
+        let turnErrorToHandle: ClassifiedError | null = null;
+        let currentTurnId = '';
+        let lastProcessedEventId: string | undefined = undefined;
+        let hasResumedFromPause = false;
 
-            if (terminal.outcome === 'paused' || hasRequiredActions) {
-              if (ctx.mapperState.pauses.length > 0) {
-                this.log('stream:paused_terminal_with_pauses', { runId: ctx.runId, count: ctx.mapperState.pauses.length });
+        try {
+          while (!terminalEncountered && !turnErrorToHandle && !ctx.isCancelled && !ctx.abortController.signal.aborted) {
+            for await (const raw of turnStream) {
+              if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+                break;
+              }
+
+              const rawEvent = raw as RawEvent;
+              const rawData = isPlainObject(rawEvent.data)
+                ? (rawEvent.data as Record<string, unknown>)
+                : isPlainObject(raw)
+                ? (raw as Record<string, unknown>)
+                : null;
+
+              const eventTurnId = typeof rawData?.turn_id === 'string'
+                ? rawData.turn_id
+                : typeof rawData?.turnId === 'string'
+                ? rawData.turnId
+                : undefined;
+              if (eventTurnId) {
+                currentTurnId = eventTurnId;
+              }
+
+              const eventId = typeof rawData?.id === 'string'
+                ? rawData.id
+                : typeof rawEvent?.id === 'string'
+                ? rawEvent.id
+                : undefined;
+              if (eventId) {
+                lastProcessedEventId = eventId;
+              }
+
+              const mapResult = mapRawEvent(raw, ctx.mapperState);
+              for (const ev of mapResult.events) {
+                if (ev.type === 'tool.call' || ev.type === 'proposal.created') {
+                  sideEffectsOccurredInAttempt = true;
+                }
+                ctx.queue.push(ev, ctx.epoch);
+              }
+
+              // Sequence gap handling
+              if (mapResult.gap) {
+                this.log('stream:sequence_gap', {
+                  runId: ctx.runId,
+                  expected: mapResult.gap.expected,
+                  received: mapResult.gap.received,
+                });
+                terminalEncountered = {
+                  type: 'run.failed',
+                  error: {
+                    kind: 'unknown',
+                    message: `Sequence gap detected at completion boundary (expected ${mapResult.gap.expected}, received ${mapResult.gap.received})`,
+                    retryable: false,
+                  },
+                };
+                break;
+              }
+
+              // Approval pause handling
+              if (mapResult.newPauses.length > 0) {
+                sideEffectsOccurredInAttempt = true;
+                this.log('stream:new_pauses', { runId: ctx.runId, count: mapResult.newPauses.length });
                 const pauses = ctx.mapperState.consumePauses();
                 let pauseRes: PauseResolution;
                 try {
                   pauseRes = await ctx.approvalBridge.handlePause(
                     pauses,
-                    sessionId,
+                    ctx.sessionId!,
                     currentTurnId,
                     ctx.abortController.signal,
-                    (ev) => ctx.queue.push(ev, ctx.epoch)
+                    (ev) => {
+                      if (ev.type === 'proposal.created') sideEffectsOccurredInAttempt = true;
+                      ctx.queue.push(ev, ctx.epoch);
+                    }
                   );
                 } catch (err: unknown) {
                   if (ctx.isCancelled || ctx.abortController.signal.aborted) {
@@ -560,7 +576,7 @@ export class SessionOrchestrator implements EngineApi {
 
                 try {
                   await this.client.submitApprovals(
-                    sessionId,
+                    ctx.sessionId!,
                     currentTurnId,
                     pauseRes.approvals,
                     ctx.abortController.signal
@@ -570,107 +586,301 @@ export class SessionOrchestrator implements EngineApi {
                   if (ctx.isCancelled || ctx.abortController.signal.aborted) {
                     return;
                   }
-                  const forgeError = this.classifyError(err);
-                  terminalEncountered = { type: 'run.failed', error: forgeError };
+                  turnErrorToHandle = this.classifyError(err);
                   break;
                 }
               }
-              // If pauses was empty, it was already handled by mapResult.newPauses: stream continues!
-            } else if (terminal.outcome === 'error') {
-              terminalEncountered = {
-                type: 'run.failed',
-                error: {
-                  kind: 'model',
-                  message: terminal.message,
-                  retryable: false,
-                },
-              };
-              break;
-            } else if (terminal.outcome === 'cancelled') {
-              terminalEncountered = { type: 'run.cancelled' };
-              break;
-            } else if (eventType === 'turn.done') {
-              if (terminal.outcome === 'done') {
-                // Check for unconsumed approval pauses at completion
-                if (ctx.mapperState.pauses.length > 0) {
-                  terminalEncountered = {
-                    type: 'run.failed',
-                    error: {
-                      kind: 'unknown',
-                      message: 'Turn completed with unresolved approval pauses',
-                      retryable: false,
-                    },
-                  };
-                  break;
-                }
 
-                const summary = this.extractSummary(terminal.output);
-                terminalEncountered = { type: 'run.completed', summary };
-                break;
-              } else if (terminal.outcome === 'non_terminal') {
-                // A non_terminal result on turn.done is a failure
-                terminalEncountered = {
-                  type: 'run.failed',
-                  error: {
-                    kind: 'unknown',
-                    message: `turn.done received with non-terminal status '${terminal.currentStatus ?? 'unknown'}'`,
-                    retryable: false,
-                  },
-                };
-                break;
+              // Terminal wire event inspection
+              const eventType = rawData && typeof rawData.type === 'string' ? rawData.type : rawEvent.event;
+
+              if (eventType === 'turn.update' || eventType === 'turn.done') {
+                const terminal = mapTerminal(raw);
+
+                const hasRequiredActions =
+                  terminal.outcome === 'done' &&
+                  Array.isArray(terminal.requiredActions) &&
+                  terminal.requiredActions.length > 0;
+
+                if (terminal.outcome === 'paused' || hasRequiredActions) {
+                  if (ctx.mapperState.pauses.length > 0) {
+                    sideEffectsOccurredInAttempt = true;
+                    this.log('stream:paused_terminal_with_pauses', { runId: ctx.runId, count: ctx.mapperState.pauses.length });
+                    const pauses = ctx.mapperState.consumePauses();
+                    let pauseRes: PauseResolution;
+                    try {
+                      pauseRes = await ctx.approvalBridge.handlePause(
+                        pauses,
+                        ctx.sessionId!,
+                        currentTurnId,
+                        ctx.abortController.signal,
+                        (ev) => {
+                          if (ev.type === 'proposal.created') sideEffectsOccurredInAttempt = true;
+                          ctx.queue.push(ev, ctx.epoch);
+                        }
+                      );
+                    } catch (err: unknown) {
+                      if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+                        return;
+                      }
+                      throw err;
+                    }
+
+                    if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+                      return;
+                    }
+
+                    try {
+                      await this.client.submitApprovals(
+                        ctx.sessionId!,
+                        currentTurnId,
+                        pauseRes.approvals,
+                        ctx.abortController.signal
+                      );
+                      hasResumedFromPause = true;
+                    } catch (err: unknown) {
+                      if (ctx.isCancelled || ctx.abortController.signal.aborted) {
+                        return;
+                      }
+                      turnErrorToHandle = this.classifyError(err);
+                      break;
+                    }
+                  }
+                } else if (terminal.outcome === 'error') {
+                  turnErrorToHandle = this.classifyError(terminal.message);
+                  break;
+                } else if (terminal.outcome === 'cancelled') {
+                  terminalEncountered = { type: 'run.cancelled' };
+                  break;
+                } else if (eventType === 'turn.done') {
+                  if (terminal.outcome === 'done') {
+                    if (ctx.mapperState.pauses.length > 0) {
+                      terminalEncountered = {
+                        type: 'run.failed',
+                        error: {
+                          kind: 'unknown',
+                          message: 'Turn completed with unresolved approval pauses',
+                          retryable: false,
+                        },
+                      };
+                      break;
+                    }
+
+                    const summary = this.extractSummary(terminal.output);
+                    terminalEncountered = { type: 'run.completed', summary };
+                    break;
+                  } else if (terminal.outcome === 'non_terminal') {
+                    terminalEncountered = {
+                      type: 'run.failed',
+                      error: {
+                        kind: 'unknown',
+                        message: `turn.done received with non-terminal status '${terminal.currentStatus ?? 'unknown'}'`,
+                        retryable: false,
+                      },
+                    };
+                    break;
+                  }
+                }
               }
+            }
+
+            if (terminalEncountered || turnErrorToHandle || ctx.isCancelled || ctx.abortController.signal.aborted) {
+              break;
+            }
+
+            if (hasResumedFromPause && currentTurnId && lastProcessedEventId) {
+              hasResumedFromPause = false;
+              this.log('stream:reconnect_subscribe', {
+                runId: ctx.runId,
+                turnId: currentTurnId,
+                afterEventId: lastProcessedEventId,
+              });
+              turnStream = this.client.subscribeTurn(
+                ctx.sessionId!,
+                currentTurnId,
+                {
+                  afterEventId: lastProcessedEventId,
+                  signal: ctx.abortController.signal,
+                }
+              );
+            } else {
+              break;
             }
           }
+        } catch (streamErr: unknown) {
+          if (ctx.isCancelled || ctx.abortController.signal.aborted) return;
+          turnErrorToHandle = this.classifyError(streamErr);
         }
 
-        if (terminalEncountered || ctx.isCancelled || ctx.abortController.signal.aborted) {
-          break;
+        if (ctx.isCancelled || ctx.abortController.signal.aborted) return;
+
+        if (terminalEncountered) {
+          await this.finalizeRun(ctx, terminalEncountered, 'turn_terminal');
+          return;
         }
 
-        // If the original SSE stream ended when the turn paused, reconnect with client.subscribeTurn
-        if (hasResumedFromPause && currentTurnId && lastProcessedEventId) {
-          hasResumedFromPause = false;
-          this.log('stream:reconnect_subscribe', {
-            runId: ctx.runId,
-            turnId: currentTurnId,
-            afterEventId: lastProcessedEventId,
-          });
-          turnStream = this.client.subscribeTurn(
-            sessionId,
-            currentTurnId,
-            {
-              afterEventId: lastProcessedEventId,
-              signal: ctx.abortController.signal,
+        if (turnErrorToHandle) {
+          // Retry condition: retryable AND no side effects occurred in attempt AND retries remaining
+          if (turnErrorToHandle.retryable && !sideEffectsOccurredInAttempt && attempt < this.resilience.maxRetries) {
+            attempt++;
+            const delayMs = this.resilience.getDelay(attempt);
+            this.log('run:retry', { attempt, delayMs, kind: turnErrorToHandle.kind, stage: 'stream_turn' });
+            ctx.queue.push({ type: 'retry', attempt, delayMs, kind: turnErrorToHandle.kind }, ctx.epoch);
+            try {
+              await this.resilience.sleep(delayMs, ctx.abortController.signal);
+            } catch {
+              await this.finalizeRun(ctx, { type: 'run.cancelled' }, 'cancelled_during_backoff');
+              return;
             }
-          );
-        } else {
-          // Stream ended without a terminal event and not resuming from pause
-          break;
+            continue;
+          }
+
+          const handled = await this.handleTurnError(ctx, turnErrorToHandle);
+          if (!handled) return;
+          attempt = 0;
+          continue;
         }
-      }
 
-      if (ctx.isCancelled || ctx.abortController.signal.aborted) {
-        return;
-      }
-
-      if (terminalEncountered) {
-        await this.finalizeRun(ctx, terminalEncountered, 'turn_terminal');
-      } else {
-        // Unexpected stream EOF without a positively established successful terminal outcome -> unreachable failure
-        const eofError: ForgeError = {
+        // Premature stream EOF without terminal event
+        const eofClassified: ClassifiedError = {
           kind: 'unreachable',
           message: 'Stream ended prematurely without a terminal turn event',
           retryable: true,
+          isTrueForgeDown: false,
         };
-        await this.finalizeRun(ctx, { type: 'run.failed', error: eofError }, 'unexpected_stream_eof');
+
+        if (!sideEffectsOccurredInAttempt && attempt < this.resilience.maxRetries) {
+          attempt++;
+          const delayMs = this.resilience.getDelay(attempt);
+          this.log('run:retry', { attempt, delayMs, kind: 'unreachable', stage: 'stream_eof' });
+          ctx.queue.push({ type: 'retry', attempt, delayMs, kind: 'unreachable' }, ctx.epoch);
+          try {
+            await this.resilience.sleep(delayMs, ctx.abortController.signal);
+          } catch {
+            await this.finalizeRun(ctx, { type: 'run.cancelled' }, 'cancelled_during_backoff');
+            return;
+          }
+          continue;
+        }
+
+        const handled = await this.handleTurnError(ctx, eofClassified);
+        if (!handled) return;
+        attempt = 0;
       }
     } catch (err: unknown) {
       if (ctx.isCancelled || ctx.abortController.signal.aborted) {
         return;
       }
-      const forgeError = this.classifyError(err);
-      await this.finalizeRun(ctx, { type: 'run.failed', error: forgeError }, 'pump_error');
+      const classified = this.classifyError(err);
+      await this.finalizeRun(ctx, { type: 'run.failed', error: classified }, 'pump_error');
     }
+  }
+
+  /**
+   * Evaluates failover eligibility when retries are exhausted or error is non-retryable.
+   * Returns true if failover succeeded and loop should continue on fallback;
+   * returns false if run was finalized with a terminal event.
+   */
+  private async handleTurnError(
+    ctx: RunContext,
+    classified: ClassifiedError
+  ): Promise<boolean> {
+    if (classified.isTrueForgeDown) {
+      await this.finalizeRun(ctx, { type: 'run.failed', error: classified }, 'trueforge_down');
+      return false;
+    }
+
+    if (ctx.profile === 'primary') {
+      const anyApplied = this.anyHunkApplied || ctx.approvalBridge.anyHunkApplied;
+      if (anyApplied) {
+        // Row 4: no replay when hunks have already been applied
+        const failure: ForgeError = {
+          kind: classified.kind,
+          message:
+            'Changes already applied to workspace; failover replay disabled to prevent duplicate application.',
+          retryable: false,
+        };
+        await this.finalizeRun(ctx, { type: 'run.failed', error: failure }, 'failover_prevented_by_applied_hunk');
+        return false;
+      }
+
+      // Failover to fallback
+      this.log('run:failover', {
+        runId: ctx.runId,
+        from: this.config.setup.agents.primary,
+        to: this.config.setup.agents.fallback,
+        reason: classified.kind,
+      });
+
+      // 1. Discard pending proposals
+      const discarded = ctx.approvalBridge.getProposalStore().discardAll();
+      for (const p of discarded) {
+        ctx.queue.push({ type: 'proposal.discarded', proposalId: p.id, reason: 'failover' }, ctx.epoch);
+      }
+
+      // 2. Close old DecisionStore records
+      if (ctx.sessionId) {
+        ctx.approvalBridge.getDecisionStore().cancelSession(ctx.sessionId);
+      }
+
+      // 3. Bump run epoch so late primary events are ignored
+      this.runEpoch++;
+      ctx.epoch = this.runEpoch;
+
+      // 4. Emit failover event BEFORE fallback streams
+      ctx.queue.push(
+        {
+          type: 'failover',
+          from: this.config.setup.agents.primary,
+          to: this.config.setup.agents.fallback,
+          reason: classified.kind,
+        },
+        ctx.epoch
+      );
+
+      // 5. Budget reset: re-charge seed and mentions, then emit budget event
+      ctx.usedTokens = ctx.initialTokens;
+      ctx.queue.push(
+        {
+          type: 'budget',
+          usedTokens: ctx.usedTokens,
+          limitTokens: this.config.setup.budgets.runToolBudgetTokens,
+        },
+        ctx.epoch
+      );
+
+      // 6. Switch context to fallback
+      ctx.primaryFailure = classified;
+      ctx.profile = 'fallback';
+      ctx.modelId = this.config.models.profiles.fallback.modelId;
+      ctx.sessionId = null;
+      ctx.approvalBridge = new ApprovalBridge(this.host);
+      ctx.mapperState = createEventMapperState();
+
+      return true;
+    }
+
+    // Fallback failed. If primary failed earlier, name both causes with token redacted per Row 5
+    let combinedMsg: string;
+    if (ctx.primaryFailure) {
+      const primaryMsg = ctx.primaryFailure.message;
+      const fallbackMsg = classified.message;
+      combinedMsg = redactToken(
+        `Primary agent (${this.config.setup.agents.primary}) failed: ${primaryMsg}. Fallback agent (${this.config.setup.agents.fallback}) failed: ${fallbackMsg}.`,
+        this.config.setup.mcp.token
+      );
+    } else {
+      combinedMsg = redactToken(classified.message, this.config.setup.mcp.token);
+    }
+
+    const dualError: ForgeError = {
+      kind: classified.kind,
+      message: combinedMsg,
+      retryable: classified.retryable,
+    };
+
+    await this.finalizeRun(ctx, { type: 'run.failed', error: dualError }, 'fallback_failed');
+    return false;
   }
 
   /**
@@ -754,7 +964,11 @@ export class SessionOrchestrator implements EngineApi {
           text: inlineReq.selectedText,
         },
       ];
-      return this.client.userMessageInput(inlineReq.prompt, blocks);
+      let effectivePrompt = inlineReq.prompt;
+      if (inlineReq.selectedText && inlineReq.selectedText.trim().length > 0) {
+        effectivePrompt = `${inlineReq.prompt}\n\nThe selected code is provided, propose the edit directly with proposeEdit, do not search or read first.`;
+      }
+      return this.client.userMessageInput(effectivePrompt, blocks);
     }
 
     const agentReq = req as AgentRequest;
@@ -842,78 +1056,8 @@ export class SessionOrchestrator implements EngineApi {
   /**
    * Deterministically classifies an encountered error into a contract ForgeError.
    */
-  private classifyError(err: unknown): ForgeError {
-    if (err instanceof NetworkError) {
-      return {
-        kind: 'unreachable',
-        message: err.message,
-        retryable: true,
-      };
-    }
-
-    if (err instanceof HttpError) {
-      if (err.status === 401 || err.status === 403) {
-        return {
-          kind: 'auth',
-          message: err.message,
-          retryable: false,
-        };
-      }
-      if (err.status === 429) {
-        return {
-          kind: 'rate_limit',
-          message: err.message,
-          retryable: true,
-        };
-      }
-      if (err.status === 408) {
-        return {
-          kind: 'timeout',
-          message: err.message,
-          retryable: true,
-        };
-      }
-      if (err.status >= 500 && err.status <= 599) {
-        return {
-          kind: 'model',
-          message: err.message,
-          retryable: true,
-        };
-      }
-      return {
-        kind: 'unknown',
-        message: err.message,
-        retryable: false,
-      };
-    }
-
-    if (err instanceof Error) {
-      if (err.name === 'AbortError') {
-        return {
-          kind: 'unreachable',
-          message: 'Request timed out or connection was aborted',
-          retryable: true,
-        };
-      }
-      if (err.message.includes('timed out') || err.message.includes('timeout')) {
-        return {
-          kind: 'timeout',
-          message: err.message,
-          retryable: false,
-        };
-      }
-      return {
-        kind: 'unknown',
-        message: err.message,
-        retryable: false,
-      };
-    }
-
-    return {
-      kind: 'unknown',
-      message: String(err ?? 'Unknown error'),
-      retryable: false,
-    };
+  private classifyError(err: unknown): ClassifiedError {
+    return this.resilience.classify(err, this.config.setup.baseUrl);
   }
 
   /**
