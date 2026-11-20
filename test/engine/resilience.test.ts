@@ -1189,7 +1189,7 @@ describe('SessionOrchestrator - Deterministic Outcome Table (V2.3.5)', () => {
 
     expect(recordedPrompts[0]).toContain('Refactor this');
     expect(recordedPrompts[0]).toContain(
-      'The selected code is provided, propose the edit directly with proposeEdit, do not search or read first.'
+      'The selected code is provided, propose the edit directly with proposeEdit, then finish; do not search, read files, or run any command or tests.'
     );
 
     // 2. With empty selected text
@@ -1204,6 +1204,19 @@ describe('SessionOrchestrator - Deterministic Outcome Table (V2.3.5)', () => {
 
     expect(recordedPrompts[1]).toContain('Refactor nothing');
     expect(recordedPrompts[1]).not.toContain('The selected code is provided');
+    expect(recordedPrompts[1]).not.toContain('propose the edit directly with proposeEdit, then finish');
+
+    // 3. In agent-mode (no selection)
+    for await (const _ev of orchestrator.runAgent({
+      prompt: 'Agent mode prompt',
+      mentions: [],
+    })) {
+      // consume
+    }
+
+    expect(recordedPrompts[2]).toContain('Agent mode prompt');
+    expect(recordedPrompts[2]).not.toContain('The selected code is provided');
+    expect(recordedPrompts[2]).not.toContain('propose the edit directly with proposeEdit, then finish');
   });
 
   it('fails over immediately with reason auth and 0 retries when primary encounters HTTP 400 invalid API key', async () => {

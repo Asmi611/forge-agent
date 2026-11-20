@@ -1,11 +1,12 @@
 /**
- * Hermetic unit tests for canonical agent instructions and agent specification (Task E-11).
+ * Hermetic unit tests for canonical agent instructions and agent specification (Task E-11, E-14, E-16).
  *
  * Verifies that:
  * 1. Both instruction files are strictly under 300 words.
  * 2. Neither file contains task-specific words (flask, config, cli, JSON).
  * 3. agent.spec.json has preload: true and require_approval_for_tools: ['proposeEdit', 'createFile'].
  * 4. The instructions mandate proposing edits for all affected files and running tests.
+ * 5. Inline instructions direct proposing and finishing directly without running tests or commands.
  */
 
 import * as fs from 'node:fs';
@@ -82,5 +83,11 @@ describe('Canonical Agent Instructions and Specification', () => {
 
     expect(mainContent).toMatch(/independent.*together in one step/i);
     expect(spec.instructions).toMatch(/independent.*together in one step/i);
+  });
+
+  it('directs inline edits to propose and finish without running commands or tests', () => {
+    const inlineContent = fs.readFileSync(inlineInstructionsPath, 'utf-8');
+    expect(inlineContent).toMatch(/propose the edit directly with proposeEdit, then finish/i);
+    expect(inlineContent).toMatch(/do not search, read files, or run any command or tests/i);
   });
 });
