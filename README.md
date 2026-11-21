@@ -183,8 +183,8 @@ Expected baseline output: **55 passed, 3 skipped**.
 
 1. **Task A — Inline Edit (`Ctrl+K`)**:
    - Open `src/flask/cli.py` in `flask-A`, select the `get_debug_flag` function.
-   - Press `Ctrl+K`, enter the prompt to invert the default behavior.
-   - Per-hunk diff renders in editor. Review and accept hunks -> click Apply.
+   - Press `Ctrl+Alt+K`, enter the prompt to invert the default behavior.
+   - Per-hunk diff renders in editor. Review and accept hunks -> click 'Save accepted changes' in the panel (do not press Ctrl+S in the diff).
    - Verify changes with test execution. Quick Undo / Redo restores exact state.
 2. **Task B — Agent Mode (Multi-File Edit & Verification)**:
    - In `flask-B`, open the Forge Agent panel.
@@ -200,7 +200,7 @@ Expected baseline output: **55 passed, 3 skipped**.
 
 ## Known Limitations
 
-- **(a) Context Seed Heuristics:** The initial lexical seed can miss the optimal file when prompt descriptions are highly abstract (Task B in agent mode benefits from explicit hints to inspect `cli.py`, `test_cli.py`, and `cli.rst`).
+- **(a) Context Seed Heuristics:** The initial lexical seed can miss the best file when a request is vague (for example, 'command line' does not match the file name 'cli'). In Task B the agent's own search tools located src/flask/cli.py, tests/test_cli.py and docs/cli.rst without any file names in the prompt, so the seed is an aid, not a complete solution.
 - **(b) Fallback Multi-turn Limitations:** Groq reasoning models can struggle with multi-turn tool calling; fallback is most reliable when proposing changes on the initial turn.
 - **(c) Free-Tier Rate Limits:** Free-tier provider quotas (e.g., ~20 requests/day per Gemini model) require deliberate rate management.
 - **(d) Model Fallibility:** Language models can generate incorrect hunks; granular per-hunk human review is essential.
